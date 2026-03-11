@@ -1,1 +1,28 @@
 @import "tailwindcss";
+
+.edge {
+  stroke: #444;
+  stroke-linecap: round;
+}
+
+.vertex {
+  fill: #222;
+}
+
+.add-cell {
+  fill: rgba(100, 116, 139, 0.12);
+  stroke: rgba(100, 116, 139, 0.4);
+  stroke-width: 0.04;
+  stroke-dasharray: 0.08 0.08;
+  cursor: pointer;
+}
+
+.add-cell:hover {
+  fill: rgba(100, 116, 139, 0.2);
+  stroke: rgba(100, 116, 139, 0.7);
+}
+
+.occupied-cell {
+  fill: transparent;
+  cursor: context-menu;
+}
