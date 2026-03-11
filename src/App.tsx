@@ -17,6 +17,7 @@ export interface ShapeConfig {
   gridSizeY: number;
   height: number;
   preferUniversalConnectors: boolean;
+  prefer2CellTarps: boolean;
 }
 
 const defaultConfig: ShapeConfig = {
@@ -24,6 +25,7 @@ const defaultConfig: ShapeConfig = {
   gridSizeY: 10,
   height: 10,
   preferUniversalConnectors: false,
+  prefer2CellTarps: true,
 };
 
 function ShapeCanvas({
@@ -100,10 +102,7 @@ function ShapeCanvas({
       viewBox={viewBoxScaled}
       preserveAspectRatio="xMidYMid meet"
     >
-      <g
-        className="shape"
-        transform={`scale(${gx}, ${gy})`}
-      >
+      <g className="shape" transform={`scale(${gx}, ${gy})`}>
         {edges.map((e, i) => (
           <line
             key={i}
@@ -177,7 +176,87 @@ function PartsList({
 }) {
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
-  const { height, preferUniversalConnectors } = config;
+  const { height, preferUniversalConnectors, prefer2CellTarps } = config;
+
+  // Tarps: cover active cells
+  const cellKeys = [...state.cells];
+  const cellSet = new Set(cellKeys);
+  type TarpEntry = { w: number; h: number; count: number };
+  const tarpEntries: TarpEntry[] = [];
+  if (cellKeys.length > 0) {
+    if (!prefer2CellTarps) {
+      tarpEntries.push({ w: gx, h: gy, count: cellKeys.length });
+    } else {
+      const key = (c: number, r: number) => `${c},${r}`;
+      const parse = (k: string): { c: number; r: number } => {
+        const [c = 0, r = 0] = k.split(",").map(Number);
+        return { c, r };
+      };
+      // Maximum bipartite matching: grid cells are bipartite by (c+r) % 2.
+      // Match as many adjacent cell pairs as possible (any mix of horizontal/vertical).
+      const leftCells = cellKeys.filter((k) => {
+        const { c, r } = parse(k);
+        return (c + r) % 2 === 0;
+      });
+      const adj = new Map<string, string[]>();
+      for (const k of leftCells) {
+        const { c, r } = parse(k);
+        const neighbors: string[] = [];
+        for (const [dc, dr] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ] as const) {
+          const nk = key(c + dc, r + dr);
+          if (cellSet.has(nk)) neighbors.push(nk);
+        }
+        adj.set(k, neighbors);
+      }
+      const matchR = new Map<string, string>();
+      const dfs = (u: string, seen: Set<string>): boolean => {
+        for (const v of adj.get(u) ?? []) {
+          if (seen.has(v)) continue;
+          seen.add(v);
+          const matchedTo = matchR.get(v);
+          if (matchedTo === undefined || dfs(matchedTo, seen)) {
+            matchR.set(v, u);
+            return true;
+          }
+        }
+        return false;
+      };
+      for (const u of leftCells) {
+        dfs(u, new Set());
+      }
+      // Classify each matched pair as horizontal or vertical; merge counts by canonical size (smaller × larger)
+      let horizontalPairs = 0;
+      let verticalPairs = 0;
+      for (const [rightK, leftK] of matchR) {
+        const pa = parse(leftK);
+        const pb = parse(rightK);
+        if (pa.r === pb.r) horizontalPairs++;
+        else verticalPairs++;
+      }
+      const canonical = (a: number, b: number) =>
+        [Math.min(a, b), Math.max(a, b)] as const;
+      const tarpBySize = new Map<string, number>();
+      const addTarp = (w: number, h: number, count: number) => {
+        if (count <= 0) return;
+        const [lo, hi] = canonical(w, h);
+        const key = `${lo},${hi}`;
+        tarpBySize.set(key, (tarpBySize.get(key) ?? 0) + count);
+      };
+      addTarp(2 * gx, gy, horizontalPairs);
+      addTarp(gx, 2 * gy, verticalPairs);
+      addTarp(gx, gy, cellKeys.length - 2 * matchR.size);
+      for (const [key, count] of tarpBySize) {
+        const [w = 0, h = 0] = key.split(",").map(Number);
+        tarpEntries.push({ w, h, count });
+      }
+      tarpEntries.sort((a, b) => a.w - b.w || a.h - b.h);
+    }
+  }
 
   // Combined poles + edges by length (all in ft)
   const lengthCounts = new Map<number, number>();
@@ -218,47 +297,30 @@ function PartsList({
     (a, b) => a[0] - b[0],
   );
 
+  const lines: string[] = [];
+  for (const [len, count] of sortedLengths) {
+    lines.push(`Poles (${len} ft): ${count}`);
+  }
+  for (const [slots, count] of sortedConnectorSlots) {
+    lines.push(`Connector (${slots}-way): ${count}`);
+  }
+  lines.push(`Foot plates: ${footPlates}`);
+  lines.push(`Ratchet straps: ${ratchetStraps}`);
+  lines.push(`Lag screws: ${lagScrews}`);
+  for (const entry of tarpEntries) {
+    lines.push(`Tarps (${entry.w} ft × ${entry.h} ft): ${entry.count}`);
+  }
+
   return (
     <section className="mt-8 w-full max-w-4xl bg-white rounded-lg shadow border border-stone-200 p-4">
       <h2 className="text-sm font-semibold text-stone-700 mb-3">Parts list</h2>
-      <dl className="grid gap-2 text-sm">
-        {sortedLengths.length > 0 && (
-          <div>
-            <dt className="text-stone-500 mb-1">Poles &amp; edges</dt>
-            <dd className="flex flex-wrap gap-x-4 gap-y-1">
-              {sortedLengths.map(([len, count]) => (
-                <span key={len} className="font-medium text-stone-800">
-                  {len} ft × {count}
-                </span>
-              ))}
-            </dd>
+      <div className="text-sm text-stone-800 whitespace-pre-wrap break-all">
+        {lines.map((line, i) => (
+          <div key={i} className="leading-relaxed">
+            {line}
           </div>
-        )}
-        {sortedConnectorSlots.length > 0 && (
-          <div>
-            <dt className="text-stone-500 mb-1">Connectors</dt>
-            <dd className="flex flex-wrap gap-x-4 gap-y-1">
-              {sortedConnectorSlots.map(([slots, count]) => (
-                <span key={slots} className="font-medium text-stone-800">
-                  {slots}-way × {count}
-                </span>
-              ))}
-            </dd>
-          </div>
-        )}
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <span className="text-stone-500">Foot plates:</span>
-          <span className="font-medium text-stone-800">× {footPlates}</span>
-        </div>
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <span className="text-stone-500">Ratchet straps:</span>
-          <span className="font-medium text-stone-800">× {ratchetStraps}</span>
-        </div>
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <span className="text-stone-500">Lag screws:</span>
-          <span className="font-medium text-stone-800">× {lagScrews}</span>
-        </div>
-      </dl>
+        ))}
+      </div>
     </section>
   );
 }
@@ -325,6 +387,15 @@ function ConfigPanel({
             Prefer universal connectors
           </span>
         </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={config.prefer2CellTarps}
+            onChange={(e) => set({ prefer2CellTarps: e.target.checked })}
+            className="rounded border-stone-300"
+          />
+          <span className="text-sm text-stone-700">Prefer 2-cell tarps</span>
+        </label>
       </div>
     </aside>
   );
@@ -363,7 +434,6 @@ export default function App() {
         <ConfigPanel config={config} onChange={setConfig} />
       </div>
       <PartsList config={config} state={state} />
-      <StateDebug state={state} />
     </main>
   );
 }
