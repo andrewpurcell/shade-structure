@@ -116,11 +116,12 @@ function ShapeCanvas({
           />
         ))}
         {vertexPoints.map((v) => (
-          <circle
+          <ellipse
             key={v.id}
             cx={v.x}
             cy={v.y}
-            r={VERTEX_RADIUS_GRID}
+            rx={VERTEX_RADIUS_GRID}
+            ry={VERTEX_RADIUS_GRID * (gx / gy)}
             className="vertex"
           />
         ))}
