@@ -8,7 +8,7 @@ import {
   removeCell,
 } from "./shapeState";
 
-const DISPLAY_HEIGHT_BASE = 40; // pixels per "height" unit
+const DISPLAY_SIZE = 400; // canvas size in pixels (height config does not affect rendering)
 const VERTEX_RADIUS_GRID = 0.08; // in grid units
 const EDGE_STROKE_GRID = 0.04; // in grid units
 
@@ -81,7 +81,6 @@ function ShapeCanvas({
     return { key, c, r };
   });
 
-  const displaySize = config.height * DISPLAY_HEIGHT_BASE;
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
   const viewMinXS = viewMinX * gx;
@@ -89,8 +88,8 @@ function ShapeCanvas({
   const viewWS = viewW * gx;
   const viewHS = viewH * gy;
   const L = Math.max(viewWS, viewHS);
-  const displayWidth = (displaySize * viewWS) / L;
-  const displayHeight = (displaySize * viewHS) / L;
+  const displayWidth = (DISPLAY_SIZE * viewWS) / L;
+  const displayHeight = (DISPLAY_SIZE * viewHS) / L;
   const viewBoxScaled = `${viewMinXS} ${viewMinYS} ${viewWS} ${viewHS}`;
 
   return (
@@ -165,6 +164,84 @@ function StateDebug({ state }: { state: ShapeState }) {
     <pre className="mt-8 w-full max-w-4xl text-xs font-mono text-stone-600 bg-stone-200 rounded-lg p-4 overflow-auto max-h-48">
       {JSON.stringify({ vertices, edges, cells }, null, 2)}
     </pre>
+  );
+}
+
+function PartsList({
+  config,
+  state,
+}: {
+  config: ShapeConfig;
+  state: ShapeState;
+}) {
+  const gx = Math.max(1, config.gridSizeX);
+  const gy = Math.max(1, config.gridSizeY);
+  const { height, preferUniversalConnectors } = config;
+
+  // Combined poles + edges by length (all in ft)
+  const lengthCounts = new Map<number, number>();
+  // Poles: one per vertex, length = height
+  const poleCount = state.vertices.size;
+  lengthCounts.set(height, (lengthCounts.get(height) ?? 0) + poleCount);
+  // Edge lengths (respecting grid)
+  for (const ek of state.edges) {
+    const parts = ek.split("|");
+    const a = parts[0] ?? "";
+    const b = parts[1] ?? "";
+    const pa = state.vertices.get(a);
+    const pb = state.vertices.get(b);
+    if (!pa || !pb) continue;
+    const dx = Math.abs(pb.x - pa.x);
+    const dy = Math.abs(pb.y - pa.y);
+    const length = dx > 0 ? gx * dx : gy * dy;
+    lengthCounts.set(length, (lengthCounts.get(length) ?? 0) + 1);
+  }
+
+  // Connectors: per vertex, (edge count + 1) unless universal then 5
+  const connectorCounts = new Map<number, number>();
+  for (const vid of state.vertices.keys()) {
+    const degree = [...state.edges].filter(
+      (ek) => ek.startsWith(vid + "|") || ek.endsWith("|" + vid),
+    ).length;
+    const slots = preferUniversalConnectors ? 5 : degree + 1;
+    connectorCounts.set(slots, (connectorCounts.get(slots) ?? 0) + 1);
+  }
+
+  const sortedLengths = [...lengthCounts.entries()].sort((a, b) => a[0] - b[0]);
+  const sortedConnectorSlots = [...connectorCounts.entries()].sort(
+    (a, b) => a[0] - b[0],
+  );
+
+  return (
+    <section className="mt-8 w-full max-w-4xl bg-white rounded-lg shadow border border-stone-200 p-4">
+      <h2 className="text-sm font-semibold text-stone-700 mb-3">Parts list</h2>
+      <dl className="grid gap-2 text-sm">
+        {sortedLengths.length > 0 && (
+          <div>
+            <dt className="text-stone-500 mb-1">Poles &amp; edges</dt>
+            <dd className="flex flex-wrap gap-x-4 gap-y-1">
+              {sortedLengths.map(([len, count]) => (
+                <span key={len} className="font-medium text-stone-800">
+                  {len} ft × {count}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
+        {sortedConnectorSlots.length > 0 && (
+          <div>
+            <dt className="text-stone-500 mb-1">Connectors</dt>
+            <dd className="flex flex-wrap gap-x-4 gap-y-1">
+              {sortedConnectorSlots.map(([slots, count]) => (
+                <span key={slots} className="font-medium text-stone-800">
+                  {slots}-way × {count}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </section>
   );
 }
 
@@ -267,6 +344,7 @@ export default function App() {
         </div>
         <ConfigPanel config={config} onChange={setConfig} />
       </div>
+      <PartsList config={config} state={state} />
       <StateDebug state={state} />
     </main>
   );
