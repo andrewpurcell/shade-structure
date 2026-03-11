@@ -200,13 +200,18 @@ function PartsList({
 
   // Connectors: per vertex, (edge count + 1) unless universal then 5
   const connectorCounts = new Map<number, number>();
+  let ratchetStraps = 0;
   for (const vid of state.vertices.keys()) {
     const degree = [...state.edges].filter(
       (ek) => ek.startsWith(vid + "|") || ek.endsWith("|" + vid),
     ).length;
     const slots = preferUniversalConnectors ? 5 : degree + 1;
     connectorCounts.set(slots, (connectorCounts.get(slots) ?? 0) + 1);
+    ratchetStraps += degree === 2 ? 2 : 1;
   }
+
+  const footPlates = state.vertices.size;
+  const lagScrews = ratchetStraps;
 
   const sortedLengths = [...lengthCounts.entries()].sort((a, b) => a[0] - b[0]);
   const sortedConnectorSlots = [...connectorCounts.entries()].sort(
@@ -241,6 +246,18 @@ function PartsList({
             </dd>
           </div>
         )}
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <span className="text-stone-500">Foot plates:</span>
+          <span className="font-medium text-stone-800">× {footPlates}</span>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <span className="text-stone-500">Ratchet straps:</span>
+          <span className="font-medium text-stone-800">× {ratchetStraps}</span>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <span className="text-stone-500">Lag screws:</span>
+          <span className="font-medium text-stone-800">× {lagScrews}</span>
+        </div>
       </dl>
     </section>
   );
