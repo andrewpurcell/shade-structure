@@ -48,7 +48,6 @@ function ShapeCanvas({
   const viewMinY = minY - padding;
   const viewW = maxX - minX + 2 * padding;
   const viewH = maxY - minY + 2 * padding;
-  const viewBox = `${viewMinX} ${viewMinY} ${viewW} ${viewH}`;
 
   const edges = [...state.edges]
     .map((ek) => {
@@ -83,16 +82,29 @@ function ShapeCanvas({
   });
 
   const displaySize = config.height * DISPLAY_HEIGHT_BASE;
+  const gx = Math.max(1, config.gridSizeX);
+  const gy = Math.max(1, config.gridSizeY);
+  const viewMinXS = viewMinX * gx;
+  const viewMinYS = viewMinY * gy;
+  const viewWS = viewW * gx;
+  const viewHS = viewH * gy;
+  const L = Math.max(viewWS, viewHS);
+  const displayWidth = (displaySize * viewWS) / L;
+  const displayHeight = (displaySize * viewHS) / L;
+  const viewBoxScaled = `${viewMinXS} ${viewMinYS} ${viewWS} ${viewHS}`;
 
   return (
     <svg
-      width={displaySize}
-      height={displaySize}
+      width={displayWidth}
+      height={displayHeight}
       className="block"
-      viewBox={viewBox}
+      viewBox={viewBoxScaled}
       preserveAspectRatio="xMidYMid meet"
     >
-      <g className="shape">
+      <g
+        className="shape"
+        transform={`scale(${gx}, ${gy})`}
+      >
         {edges.map((e, i) => (
           <line
             key={i}
@@ -113,32 +125,32 @@ function ShapeCanvas({
             className="vertex"
           />
         ))}
+        {addRects.map((rect) => (
+          <rect
+            key={rect.key}
+            x={rect.c}
+            y={rect.r}
+            width={1}
+            height={1}
+            className="add-cell"
+            onClick={() => onAddCell(rect.c, rect.r)}
+          />
+        ))}
+        {occupiedRects.map((rect) => (
+          <rect
+            key={rect.key}
+            x={rect.c}
+            y={rect.r}
+            width={1}
+            height={1}
+            className="occupied-cell"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onRemoveCell(rect.c, rect.r);
+            }}
+          />
+        ))}
       </g>
-      {addRects.map((rect) => (
-        <rect
-          key={rect.key}
-          x={rect.c}
-          y={rect.r}
-          width={1}
-          height={1}
-          className="add-cell"
-          onClick={() => onAddCell(rect.c, rect.r)}
-        />
-      ))}
-      {occupiedRects.map((rect) => (
-        <rect
-          key={rect.key}
-          x={rect.c}
-          y={rect.r}
-          width={1}
-          height={1}
-          className="occupied-cell"
-          onContextMenu={(e) => {
-            e.preventDefault();
-            onRemoveCell(rect.c, rect.r);
-          }}
-        />
-      ))}
     </svg>
   );
 }
