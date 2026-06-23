@@ -7,6 +7,7 @@ import {
   addCell,
   removeCell,
 } from "./shapeState";
+import { buildShareUrl, loadStateFromUrl } from "./urlState";
 
 const DISPLAY_SIZE = 400; // canvas size in pixels (height config does not affect rendering)
 const VERTEX_RADIUS_GRID = 0.08; // in grid units
@@ -39,6 +40,27 @@ function createStructureEntry(): StructureEntry {
     id: crypto.randomUUID(),
     config: { ...defaultConfig },
     state: createInitialState(),
+  };
+}
+
+function getInitialAppState(): {
+  structures: StructureEntry[];
+  inventory: Inventory;
+} {
+  const fromUrl = loadStateFromUrl();
+  if (fromUrl) {
+    return {
+      structures: fromUrl.structures.map((s) => ({
+        id: crypto.randomUUID(),
+        config: { ...s.config },
+        state: s.state,
+      })),
+      inventory: fromUrl.inventory,
+    };
+  }
+  return {
+    structures: [createStructureEntry()],
+    inventory: loadInventory(),
   };
 }
 
@@ -760,10 +782,14 @@ function StructureRow({
 }
 
 export default function App() {
-  const [structures, setStructures] = useState<StructureEntry[]>(() => [
-    createStructureEntry(),
-  ]);
-  const [inventory, setInventory] = useState<Inventory>(() => loadInventory());
+  const [initialState] = useState(() => getInitialAppState());
+  const [structures, setStructures] = useState<StructureEntry[]>(
+    () => initialState.structures,
+  );
+  const [inventory, setInventory] = useState<Inventory>(
+    () => initialState.inventory,
+  );
+  const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
@@ -802,6 +828,18 @@ export default function App() {
     });
   }, []);
 
+  const handleShare = useCallback(async () => {
+    const url = buildShareUrl(structures, inventory);
+    window.history.replaceState(null, "", url);
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 2000);
+    } catch {
+      window.prompt("Copy this link:", url);
+    }
+  }, [structures, inventory]);
+
   return (
     <main className="min-h-screen bg-stone-100 p-4 sm:p-8">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 lg:flex-row lg:items-start lg:gap-6">
@@ -816,9 +854,18 @@ export default function App() {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col items-center">
-          <h1 className="text-2xl font-semibold text-stone-700 mb-2">
-            Shade Structure
-          </h1>
+          <div className="mb-2 flex w-full items-center justify-center gap-3">
+            <h1 className="text-2xl font-semibold text-stone-700">
+              Shade Structure
+            </h1>
+            <button
+              type="button"
+              onClick={handleShare}
+              className="rounded-lg border border-stone-300 bg-white px-3 py-1 text-sm font-medium text-stone-700 shadow-sm hover:bg-stone-50"
+            >
+              {shareCopied ? "Copied!" : "Share"}
+            </button>
+          </div>
           <p className="text-stone-500 text-sm mb-8 text-center">
             Click a ghost square to add; right‑click a filled square to remove.
           </p>
