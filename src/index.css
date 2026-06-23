@@ -26,3 +26,14 @@
   fill: transparent;
   cursor: context-menu;
 }
+
+.inventory-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.inventory-input::-webkit-outer-spin-button,
+.inventory-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
