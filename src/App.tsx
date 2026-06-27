@@ -75,6 +75,7 @@ interface PartsBreakdown {
   footPlates: number;
   ratchetStraps: number;
   lagScrews: number;
+  bungieCords: number;
   tarps: Map<string, { w: number; h: number; count: number }>;
   sideTarps: Map<string, { w: number; h: number; count: number; angle: boolean }>;
 }
@@ -86,9 +87,27 @@ function emptyPartsBreakdown(): PartsBreakdown {
     footPlates: 0,
     ratchetStraps: 0,
     lagScrews: 0,
+    bungieCords: 0,
     tarps: new Map(),
     sideTarps: new Map(),
   };
+}
+
+const GROMMET_SPACING_FT = 1.5;
+
+function grommetsForEdge(feet: number): number {
+  return Math.ceil(feet / GROMMET_SPACING_FT);
+}
+
+function bungieCordsForSideShade(
+  side: SideShade,
+  dimensions: { w: number; h: number },
+): number {
+  const { w, h } = dimensions;
+  if (side.type === "angle") {
+    return grommetsForEdge(w);
+  }
+  return grommetsForEdge(w) + 2 * grommetsForEdge(h);
 }
 
 function roundFeet(n: number): number {
@@ -345,6 +364,7 @@ function computePartsBreakdown(
         count: 1,
         angle: side.type === "angle",
       });
+    breakdown.bungieCords += bungieCordsForSideShade(side, { w, h });
   }
 
   return breakdown;
@@ -362,6 +382,7 @@ function mergePartsBreakdowns(breakdowns: PartsBreakdown[]): PartsBreakdown {
     merged.footPlates += b.footPlates;
     merged.ratchetStraps += b.ratchetStraps;
     merged.lagScrews += b.lagScrews;
+    merged.bungieCords += b.bungieCords;
     for (const [key, entry] of b.tarps) {
       const existing = merged.tarps.get(key);
       if (existing) existing.count += entry.count;
@@ -492,6 +513,13 @@ function partsBreakdownToEntries(breakdown: PartsBreakdown): PartEntry[] {
       key: "lag-screws",
       label: "Lag screws",
       need: breakdown.lagScrews,
+    });
+  }
+  if (breakdown.bungieCords > 0) {
+    entries.push({
+      key: "bungie-cords",
+      label: "Bungee cords",
+      need: breakdown.bungieCords,
     });
   }
   const tarpEntries = [...breakdown.tarps.values()].sort(
