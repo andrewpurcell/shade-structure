@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Fragment } from "react";
 import {
   type ShapeState,
   type Point,
@@ -248,11 +248,6 @@ function mergePartsBreakdowns(breakdowns: PartsBreakdown[]): PartsBreakdown {
   return merged;
 }
 
-function formatPartsBreakdown(breakdown: PartsBreakdown): string[] {
-  return partsBreakdownToEntries(breakdown).map(
-    (entry) => `${entry.label}: ${entry.need}`,
-  );
-}
 
 interface PartEntry {
   key: string;
@@ -316,6 +311,71 @@ function partsBreakdownToEntries(breakdown: PartsBreakdown): PartEntry[] {
     });
   }
   return entries;
+}
+
+function entriesToTsv(
+  entries: PartEntry[],
+  inventory?: Inventory,
+): string {
+  const rows: string[][] = inventory
+    ? [["Part", "Need", "Have", "Short"]]
+    : [["Part", "Need"]];
+
+  for (const entry of entries) {
+    if (inventory) {
+      const have = inventory[entry.key] ?? 0;
+      const short = Math.max(0, entry.need - have);
+      rows.push([
+        entry.label,
+        String(entry.need),
+        String(have),
+        String(short),
+      ]);
+    } else {
+      rows.push([entry.label, String(entry.need)]);
+    }
+  }
+
+  return rows.map((row) => row.join("\t")).join("\n");
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function CopyListButton({
+  text,
+  disabled = false,
+  className = "",
+}: {
+  text: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={async () => {
+        const ok = await copyText(text);
+        if (!ok) window.prompt("Copy this list:", text);
+        else {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 2000);
+        }
+      }}
+      className={`shrink-0 text-[10px] text-stone-500 hover:text-stone-800 disabled:text-stone-300 disabled:hover:text-stone-300 ${className}`}
+    >
+      {copied ? "Copied!" : "Copy"}
+    </button>
+  );
 }
 
 const INVENTORY_STORAGE_KEY = "shade-structure-inventory";
@@ -505,26 +565,94 @@ function StateDebug({ state }: { state: ShapeState }) {
   );
 }
 
-function PartsListContent({
-  lines,
-  compact = false,
+function PartsListRows({
+  entries,
+  inventory,
+  onSetHave,
 }: {
-  lines: string[];
-  compact?: boolean;
+  entries: PartEntry[];
+  inventory?: Inventory;
+  onSetHave?: (key: string, have: number) => void;
 }) {
+  const withInventory = inventory !== undefined && onSetHave !== undefined;
+
+  if (withInventory) {
+    return (
+      <div className="grid grid-cols-[minmax(0,1fr)_2.5rem_3rem_2.5rem] gap-x-3 text-xs text-stone-800">
+        <div className="border-b border-stone-200 pb-1.5 text-[11px] font-medium text-stone-500">
+          Part
+        </div>
+        <div className="border-b border-stone-200 pb-1.5 text-right text-[11px] font-medium text-stone-500">
+          Need
+        </div>
+        <div className="border-b border-stone-200 pb-1.5 text-right text-[11px] font-medium text-stone-500">
+          Have
+        </div>
+        <div className="border-b border-stone-200 pb-1.5 text-right text-[11px] font-medium text-stone-500">
+          Short
+        </div>
+        {entries.map((entry) => {
+          const have = inventory[entry.key] ?? 0;
+          const short = Math.max(0, entry.need - have);
+          return (
+            <Fragment key={entry.key}>
+              <div className="min-w-0 border-t border-stone-100 py-1.5 leading-snug">
+                {entry.label}
+              </div>
+              <div className="border-t border-stone-100 py-1.5 text-right tabular-nums">
+                {entry.need}
+              </div>
+              <div className="border-t border-stone-100 py-1.5">
+                <input
+                  type="number"
+                  min={0}
+                  inputMode="numeric"
+                  value={inventory[entry.key] ?? ""}
+                  placeholder="0"
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") {
+                      onSetHave(entry.key, 0);
+                      return;
+                    }
+                    const n = Math.max(0, Math.floor(Number(raw) || 0));
+                    onSetHave(entry.key, n);
+                  }}
+                  className="inventory-input block w-full rounded border border-stone-300 px-1.5 py-0.5 text-right text-xs tabular-nums"
+                />
+              </div>
+              <div
+                className={`border-t border-stone-100 py-1.5 text-right tabular-nums ${
+                  short > 0 ? "font-medium text-amber-800" : "text-stone-500"
+                }`}
+              >
+                {short}
+              </div>
+            </Fragment>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={`${compact ? "text-xs" : "text-sm"} text-stone-800 whitespace-pre-wrap break-all`}
-    >
-      {lines.length > 0 ? (
-        lines.map((line, i) => (
-          <div key={i} className="leading-relaxed">
-            {line}
+    <div className="grid grid-cols-[minmax(0,1fr)_2.5rem] gap-x-4 text-xs text-stone-800">
+      <div className="border-b border-stone-200 pb-1.5 text-[11px] font-medium text-stone-500">
+        Part
+      </div>
+      <div className="border-b border-stone-200 pb-1.5 text-right text-[11px] font-medium text-stone-500">
+        Need
+      </div>
+      {entries.map((entry) => (
+        <Fragment key={entry.key}>
+          <div className="min-w-0 border-t border-stone-100 py-1.5 leading-snug">
+            {entry.label}
           </div>
-        ))
-      ) : (
-        <div className="text-stone-500">No parts yet.</div>
-      )}
+          <div className="border-t border-stone-100 py-1.5 text-right tabular-nums">
+            {entry.need}
+          </div>
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -540,13 +668,24 @@ function PartsList({
   title?: string;
   className?: string;
 }) {
-  const lines = formatPartsBreakdown(computePartsBreakdown(config, state));
+  const entries = partsBreakdownToEntries(
+    computePartsBreakdown(config, state),
+  );
+  const tsv = entriesToTsv(entries);
+
   return (
     <section
       className={`bg-white rounded-lg shadow border border-stone-200 p-2.5 h-fit shrink-0 ${className}`}
     >
-      <h3 className="text-xs font-semibold text-stone-700 mb-2">{title}</h3>
-      <PartsListContent lines={lines} compact />
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold text-stone-700">{title}</h3>
+        <CopyListButton text={tsv} disabled={entries.length === 0} />
+      </div>
+      {entries.length > 0 ? (
+        <PartsListRows entries={entries} />
+      ) : (
+        <div className="text-xs text-stone-500">No parts yet.</div>
+      )}
     </section>
   );
 }
@@ -569,6 +708,7 @@ function CombinedPartsList({
   );
   const entries = partsBreakdownToEntries(breakdown);
   const hasInventory = Object.keys(inventory).length > 0;
+  const tsv = entriesToTsv(entries, inventory);
 
   return (
     <section
@@ -578,65 +718,24 @@ function CombinedPartsList({
         <h2 className="text-xs font-semibold text-stone-700">
           Combined parts list
         </h2>
-        <button
-          type="button"
-          onClick={onClearInventory}
-          disabled={!hasInventory}
-          className="shrink-0 text-[10px] text-stone-500 hover:text-stone-800 disabled:text-stone-300 disabled:hover:text-stone-300"
-        >
-          Clear all
-        </button>
+        <div className="flex items-center gap-2">
+          <CopyListButton text={tsv} disabled={entries.length === 0} />
+          <button
+            type="button"
+            onClick={onClearInventory}
+            disabled={!hasInventory}
+            className="shrink-0 text-[10px] text-stone-500 hover:text-stone-800 disabled:text-stone-300 disabled:hover:text-stone-300"
+          >
+            Clear all
+          </button>
+        </div>
       </div>
       {entries.length > 0 ? (
-        <div className="text-xs text-stone-800">
-          <div className="grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.25rem] items-center gap-x-2 pb-1 text-[10px] font-medium text-stone-500">
-            <div>Part</div>
-            <div className="text-right">Need</div>
-            <div className="text-right">Have</div>
-            <div className="text-right">Short</div>
-          </div>
-          {entries.map((entry) => {
-            const have = inventory[entry.key] ?? 0;
-            const short = Math.max(0, entry.need - have);
-            return (
-              <div
-                key={entry.key}
-                className="grid grid-cols-[minmax(0,1fr)_2.25rem_2.75rem_2.25rem] items-center gap-x-2 border-t border-stone-100 py-1"
-              >
-                <div className="min-w-0 leading-tight">{entry.label}</div>
-                <div className="text-right tabular-nums">{entry.need}</div>
-                <div>
-                  <input
-                    type="number"
-                    min={0}
-                    inputMode="numeric"
-                    value={inventory[entry.key] ?? ""}
-                    placeholder="0"
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      if (raw === "") {
-                        onSetHave(entry.key, 0);
-                        return;
-                      }
-                      const n = Math.max(0, Math.floor(Number(raw) || 0));
-                      onSetHave(entry.key, n);
-                    }}
-                    className="inventory-input block w-full rounded border border-stone-300 px-1 py-0.5 text-right text-xs tabular-nums"
-                  />
-                </div>
-                <div
-                  className={`text-right tabular-nums ${
-                    short > 0
-                      ? "font-medium text-amber-800"
-                      : "text-stone-500"
-                  }`}
-                >
-                  {short}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <PartsListRows
+          entries={entries}
+          inventory={inventory}
+          onSetHave={onSetHave}
+        />
       ) : (
         <div className="text-sm text-stone-500">No parts yet.</div>
       )}
@@ -774,7 +873,7 @@ function StructureRow({
         <PartsList
           config={entry.config}
           state={entry.state}
-          className="w-full sm:w-44"
+          className="w-full sm:w-56"
         />
       </div>
     </section>
@@ -843,7 +942,7 @@ export default function App() {
   return (
     <main className="min-h-screen bg-stone-100 p-4 sm:p-8">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 lg:flex-row lg:items-start lg:gap-6">
-        <aside className="hidden lg:block lg:sticky lg:top-8 lg:w-60 lg:shrink-0">
+        <aside className="hidden lg:block lg:sticky lg:top-8 lg:w-72 lg:shrink-0">
           <CombinedPartsList
             structures={structures}
             inventory={inventory}
