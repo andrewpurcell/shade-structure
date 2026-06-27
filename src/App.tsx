@@ -107,87 +107,127 @@ function sideTarpDimensions(
   };
 }
 
+function parseCellKey(k: string): { c: number; r: number } {
+  const [c = 0, r = 0] = k.split(",").map(Number);
+  return { c, r };
+}
+
+function cellKey(c: number, r: number): string {
+  return `${c},${r}`;
+}
+
+type TarpOverlayKind = "single" | "horizontal" | "vertical";
+
+interface TarpOverlay {
+  kind: TarpOverlayKind;
+  cells: Array<{ c: number; r: number }>;
+}
+
+function computeTarpOverlays(
+  config: ShapeConfig,
+  state: ShapeState,
+): TarpOverlay[] {
+  const cellKeys = [...state.cells];
+  if (cellKeys.length === 0) return [];
+
+  if (!config.prefer2CellTarps) {
+    return cellKeys.map((k) => ({
+      kind: "single" as const,
+      cells: [parseCellKey(k)],
+    }));
+  }
+
+  const cellSet = new Set(cellKeys);
+  const leftCells = cellKeys.filter((k) => {
+    const { c, r } = parseCellKey(k);
+    return (c + r) % 2 === 0;
+  });
+  const adj = new Map<string, string[]>();
+  for (const k of leftCells) {
+    const { c, r } = parseCellKey(k);
+    const neighbors: string[] = [];
+    for (const [dc, dr] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nk = cellKey(c + dc, r + dr);
+      if (cellSet.has(nk)) neighbors.push(nk);
+    }
+    adj.set(k, neighbors);
+  }
+  const matchR = new Map<string, string>();
+  const dfs = (u: string, seen: Set<string>): boolean => {
+    for (const v of adj.get(u) ?? []) {
+      if (seen.has(v)) continue;
+      seen.add(v);
+      const matchedTo = matchR.get(v);
+      if (matchedTo === undefined || dfs(matchedTo, seen)) {
+        matchR.set(v, u);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const u of leftCells) {
+    dfs(u, new Set());
+  }
+
+  const overlays: TarpOverlay[] = [];
+  const paired = new Set<string>();
+  for (const [rightK, leftK] of matchR) {
+    paired.add(rightK);
+    paired.add(leftK);
+    const pa = parseCellKey(leftK);
+    const pb = parseCellKey(rightK);
+    overlays.push({
+      kind: pa.r === pb.r ? "horizontal" : "vertical",
+      cells: [pa, pb],
+    });
+  }
+  for (const k of cellKeys) {
+    if (!paired.has(k)) {
+      overlays.push({ kind: "single", cells: [parseCellKey(k)] });
+    }
+  }
+  return overlays;
+}
+
+function tarpOverlayDimensions(
+  overlay: TarpOverlay,
+  gx: number,
+  gy: number,
+): { w: number; h: number } {
+  if (overlay.kind === "horizontal") return { w: 2 * gx, h: gy };
+  if (overlay.kind === "vertical") return { w: gx, h: 2 * gy };
+  return { w: gx, h: gy };
+}
+
 function computePartsBreakdown(
   config: ShapeConfig,
   state: ShapeState,
 ): PartsBreakdown {
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
-  const { height, preferUniversalConnectors, prefer2CellTarps } = config;
+  const { height, preferUniversalConnectors } = config;
 
   const breakdown = emptyPartsBreakdown();
 
-  const cellKeys = [...state.cells];
-  const cellSet = new Set(cellKeys);
-  if (cellKeys.length > 0) {
-    if (!prefer2CellTarps) {
-      const key = `${gx},${gy}`;
-      breakdown.tarps.set(key, { w: gx, h: gy, count: cellKeys.length });
-    } else {
-      const key = (c: number, r: number) => `${c},${r}`;
-      const parse = (k: string): { c: number; r: number } => {
-        const [c = 0, r = 0] = k.split(",").map(Number);
-        return { c, r };
-      };
-      const leftCells = cellKeys.filter((k) => {
-        const { c, r } = parse(k);
-        return (c + r) % 2 === 0;
-      });
-      const adj = new Map<string, string[]>();
-      for (const k of leftCells) {
-        const { c, r } = parse(k);
-        const neighbors: string[] = [];
-        for (const [dc, dr] of [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1],
-        ] as const) {
-          const nk = key(c + dc, r + dr);
-          if (cellSet.has(nk)) neighbors.push(nk);
-        }
-        adj.set(k, neighbors);
-      }
-      const matchR = new Map<string, string>();
-      const dfs = (u: string, seen: Set<string>): boolean => {
-        for (const v of adj.get(u) ?? []) {
-          if (seen.has(v)) continue;
-          seen.add(v);
-          const matchedTo = matchR.get(v);
-          if (matchedTo === undefined || dfs(matchedTo, seen)) {
-            matchR.set(v, u);
-            return true;
-          }
-        }
-        return false;
-      };
-      for (const u of leftCells) {
-        dfs(u, new Set());
-      }
-      let horizontalPairs = 0;
-      let verticalPairs = 0;
-      for (const [rightK, leftK] of matchR) {
-        const pa = parse(leftK);
-        const pb = parse(rightK);
-        if (pa.r === pb.r) horizontalPairs++;
-        else verticalPairs++;
-      }
-      const canonical = (a: number, b: number) =>
-        [Math.min(a, b), Math.max(a, b)] as const;
-      const tarpBySize = new Map<string, number>();
-      const addTarp = (w: number, h: number, count: number) => {
-        if (count <= 0) return;
-        const [lo, hi] = canonical(w, h);
-        const sizeKey = `${lo},${hi}`;
-        tarpBySize.set(sizeKey, (tarpBySize.get(sizeKey) ?? 0) + count);
-      };
-      addTarp(2 * gx, gy, horizontalPairs);
-      addTarp(gx, 2 * gy, verticalPairs);
-      addTarp(gx, gy, cellKeys.length - 2 * matchR.size);
-      for (const [sizeKey, count] of tarpBySize) {
-        const [w = 0, h = 0] = sizeKey.split(",").map(Number);
-        breakdown.tarps.set(sizeKey, { w, h, count });
-      }
+  const overlays = computeTarpOverlays(config, state);
+  if (overlays.length > 0) {
+    const canonical = (a: number, b: number) =>
+      [Math.min(a, b), Math.max(a, b)] as const;
+    const tarpBySize = new Map<string, number>();
+    for (const overlay of overlays) {
+      const { w, h } = tarpOverlayDimensions(overlay, gx, gy);
+      const [lo, hi] = canonical(w, h);
+      const sizeKey = `${lo},${hi}`;
+      tarpBySize.set(sizeKey, (tarpBySize.get(sizeKey) ?? 0) + 1);
+    }
+    for (const [sizeKey, count] of tarpBySize) {
+      const [w = 0, h = 0] = sizeKey.split(",").map(Number);
+      breakdown.tarps.set(sizeKey, { w, h, count });
     }
   }
 
@@ -438,10 +478,12 @@ type Inventory = Record<string, number>;
 
 interface AppSettings {
   figmaScale: number;
+  showTarpOverlay: boolean;
 }
 
 const defaultSettings: AppSettings = {
   figmaScale: DEFAULT_FIGMA_SCALE,
+  showTarpOverlay: false,
 };
 
 function loadSettings(): AppSettings {
@@ -452,7 +494,12 @@ function loadSettings(): AppSettings {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return { ...defaultSettings };
     }
-    const figmaScale = (parsed as { figmaScale?: unknown }).figmaScale;
+    const record = parsed as {
+      figmaScale?: unknown;
+      showTarpOverlay?: unknown;
+    };
+    const figmaScale = record.figmaScale;
+    const showTarpOverlay = record.showTarpOverlay;
     return {
       figmaScale:
         typeof figmaScale === "number" &&
@@ -460,6 +507,8 @@ function loadSettings(): AppSettings {
         figmaScale > 0
           ? figmaScale
           : DEFAULT_FIGMA_SCALE,
+      showTarpOverlay:
+        typeof showTarpOverlay === "boolean" ? showTarpOverlay : false,
     };
   } catch {
     return { ...defaultSettings };
@@ -737,12 +786,14 @@ function ExportSvgButtons({
 function ShapeCanvas({
   config,
   state,
+  showTarpOverlay,
   onCycleAdjacentSpot,
   onRemoveCell,
   onRemoveSideShade,
 }: {
   config: ShapeConfig;
   state: ShapeState;
+  showTarpOverlay: boolean;
   onCycleAdjacentSpot: (c: number, r: number) => void;
   onRemoveCell: (c: number, r: number) => void;
   onRemoveSideShade: (c: number, r: number) => void;
@@ -801,6 +852,7 @@ function ShapeCanvas({
   const displayWidth = (DISPLAY_SIZE * viewWS) / L;
   const displayHeight = (DISPLAY_SIZE * viewHS) / L;
   const viewBoxScaled = `${viewMinXS} ${viewMinYS} ${viewWS} ${viewHS}`;
+  const tarpOverlays = showTarpOverlay ? computeTarpOverlays(config, state) : [];
 
   return (
     <svg
@@ -883,6 +935,35 @@ function ShapeCanvas({
             }}
           />
         ))}
+        {tarpOverlays.map((overlay, i) => {
+          const cs = overlay.cells.map((cell) => cell.c);
+          const rs = overlay.cells.map((cell) => cell.r);
+          const x = Math.min(...cs);
+          const y = Math.min(...rs);
+          const w = Math.max(...cs) - x + 1;
+          const h = Math.max(...rs) - y + 1;
+          const dims = tarpOverlayDimensions(overlay, gx, gy);
+          return (
+            <g key={i} className="tarp-overlay" pointerEvents="none">
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                className={`tarp-overlay-fill tarp-overlay-${overlay.kind}`}
+              />
+              <text
+                x={x + w / 2}
+                y={y + h / 2}
+                className="tarp-overlay-label"
+                textAnchor="middle"
+                dominantBaseline="central"
+              >
+                {dims.w}×{dims.h}
+              </text>
+            </g>
+          );
+        })}
       </g>
     </svg>
   );
@@ -1192,6 +1273,19 @@ function SettingsMenu({
         <p className="mt-2 text-[11px] leading-snug text-stone-500">
           Multiplier applied to SVG export dimensions for Figma.
         </p>
+        <label className="mt-4 flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.showTarpOverlay}
+            onChange={(e) =>
+              onChange({ ...settings, showTarpOverlay: e.target.checked })
+            }
+            className="mt-0.5 rounded border-stone-300 shrink-0"
+          />
+          <span className="text-xs leading-snug text-stone-700">
+            Show tarp overlay on structures
+          </span>
+        </label>
       </div>
     </details>
   );
@@ -1202,6 +1296,8 @@ function StructureRow({
   entry,
   canRemove,
   figmaScale,
+  showTarpOverlay,
+  onToggleTarpOverlay,
   onConfigChange,
   onCycleAdjacentSpot,
   onRemoveCell,
@@ -1212,6 +1308,8 @@ function StructureRow({
   entry: StructureEntry;
   canRemove: boolean;
   figmaScale: number;
+  showTarpOverlay: boolean;
+  onToggleTarpOverlay: (show: boolean) => void;
   onConfigChange: (config: ShapeConfig) => void;
   onCycleAdjacentSpot: (c: number, r: number) => void;
   onRemoveCell: (c: number, r: number) => void;
@@ -1237,9 +1335,21 @@ function StructureRow({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
         <div className="flex-1 min-w-0 flex flex-col items-center">
           <div className="bg-white rounded-lg shadow-lg border border-stone-200 overflow-hidden">
+            <div className="flex items-center justify-end border-b border-stone-200 bg-stone-50 px-4 py-2">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showTarpOverlay}
+                  onChange={(e) => onToggleTarpOverlay(e.target.checked)}
+                  className="rounded border-stone-300"
+                />
+                <span className="text-xs text-stone-600">Tarp overlay</span>
+              </label>
+            </div>
             <ShapeCanvas
               config={entry.config}
               state={entry.state}
+              showTarpOverlay={showTarpOverlay}
               onCycleAdjacentSpot={onCycleAdjacentSpot}
               onRemoveCell={onRemoveCell}
               onRemoveSideShade={onRemoveSideShade}
@@ -1372,6 +1482,10 @@ export default function App() {
                 entry={entry}
                 canRemove={structures.length > 1}
                 figmaScale={settings.figmaScale}
+                showTarpOverlay={settings.showTarpOverlay}
+                onToggleTarpOverlay={(show) =>
+                  setSettings((prev) => ({ ...prev, showTarpOverlay: show }))
+                }
                 onConfigChange={(config) =>
                   updateStructure(entry.id, (e) => ({ ...e, config }))
                 }

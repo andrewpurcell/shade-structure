@@ -58,6 +58,38 @@
   stroke-width: 0.05;
 }
 
+.tarp-overlay {
+  pointer-events: none;
+}
+
+.tarp-overlay-fill {
+  stroke-width: 0.04;
+}
+
+.tarp-overlay-horizontal {
+  fill: rgba(99, 102, 241, 0.35);
+  stroke: rgba(79, 70, 229, 0.75);
+}
+
+.tarp-overlay-vertical {
+  fill: rgba(16, 185, 129, 0.35);
+  stroke: rgba(5, 150, 105, 0.75);
+}
+
+.tarp-overlay-single {
+  fill: rgba(245, 158, 11, 0.35);
+  stroke: rgba(217, 119, 6, 0.75);
+}
+
+.tarp-overlay-label {
+  fill: rgba(28, 25, 23, 0.85);
+  font-size: 0.14px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
 .inventory-input {
   appearance: textfield;
   -moz-appearance: textfield;
