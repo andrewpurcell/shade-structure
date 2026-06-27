@@ -24,7 +24,38 @@
 
 .occupied-cell {
   fill: transparent;
-  cursor: context-menu;
+  cursor: pointer;
+}
+
+.side-shade {
+  cursor: pointer;
+}
+
+.side-shade-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.side-shade-flat,
+.side-shade-angle {
+  pointer-events: none;
+}
+
+.side-shade-flat {
+  fill: rgba(14, 116, 144, 0.45);
+  stroke: rgba(14, 116, 144, 0.85);
+  stroke-width: 0.035;
+}
+
+.side-shade-angle {
+  fill: rgba(180, 83, 9, 0.45);
+  stroke: rgba(180, 83, 9, 0.85);
+  stroke-width: 0.035;
+}
+
+.side-shade-hit:hover + .side-shade-flat,
+.side-shade-hit:hover + .side-shade-angle {
+  stroke-width: 0.05;
 }
 
 .inventory-input {

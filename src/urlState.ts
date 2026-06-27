@@ -1,4 +1,10 @@
-import { addCell, createInitialState, type ShapeState } from "./shapeState";
+import {
+  addCell,
+  createInitialState,
+  type ShapeState,
+  type SideShade,
+  type SideShadeType,
+} from "./shapeState";
 
 const DEFAULT_CONFIG = {
   gridSizeX: 10,
@@ -8,8 +14,17 @@ const DEFAULT_CONFIG = {
   prefer2CellTarps: true,
 };
 
+interface SerializedSideShade {
+  c: number;
+  r: number;
+  a: number;
+  b: number;
+  t?: 0 | 1;
+}
+
 interface SerializedStructure {
   c: string[];
+  w?: SerializedSideShade[];
   gx?: number;
   gy?: number;
   h?: number;
@@ -58,12 +73,16 @@ function fromBase64Url(encoded: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-function stateFromCells(cellKeys: string[]): ShapeState {
+function stateFromCells(
+  cellKeys: string[],
+  sideShades: SideShade[] = [],
+): ShapeState {
   if (cellKeys.length === 0) return createInitialState();
   let state: ShapeState = {
     vertices: new Map(),
     edges: new Set(),
     cells: new Set(),
+    sideShades: new Map(),
   };
   for (const key of cellKeys) {
     const parts = key.split(",");
@@ -73,7 +92,39 @@ function stateFromCells(cellKeys: string[]): ShapeState {
     state = addCell(state, c, r);
   }
   if (state.cells.size === 0) return createInitialState();
+  for (const side of sideShades) {
+    const key = `${side.c},${side.r}`;
+    if (state.cells.has(key) || state.sideShades.has(key)) continue;
+    if (!state.cells.has(`${side.attachC},${side.attachR}`)) continue;
+    state.sideShades.set(key, side);
+  }
   return state;
+}
+
+function parseSideShades(raw: unknown): SideShade[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SideShade[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry as Partial<SerializedSideShade>;
+    if (
+      typeof e.c !== "number" ||
+      typeof e.r !== "number" ||
+      typeof e.a !== "number" ||
+      typeof e.b !== "number"
+    ) {
+      continue;
+    }
+    const type: SideShadeType = e.t === 1 ? "angle" : "flat";
+    out.push({
+      c: Math.floor(e.c),
+      r: Math.floor(e.r),
+      attachC: Math.floor(e.a),
+      attachR: Math.floor(e.b),
+      type,
+    });
+  }
+  return out;
 }
 
 function parseConfig(raw: SerializedStructure): DecodedConfig {
@@ -126,7 +177,7 @@ export function loadStateFromUrl(): DecodedAppState | null {
       if (cells.length === 0) continue;
       structures.push({
         config: parseConfig(raw),
-        state: stateFromCells(cells),
+        state: stateFromCells(cells, parseSideShades(raw.w)),
       });
     }
 
@@ -151,6 +202,16 @@ export function encodeAppState(
       const entry: SerializedStructure = {
         c: [...state.cells],
       };
+      const sides = [...state.sideShades.values()];
+      if (sides.length > 0) {
+        entry.w = sides.map((side) => ({
+          c: side.c,
+          r: side.r,
+          a: side.attachC,
+          b: side.attachR,
+          ...(side.type === "angle" ? { t: 1 as const } : {}),
+        }));
+      }
       if (config.gridSizeX !== DEFAULT_CONFIG.gridSizeX) {
         entry.gx = config.gridSizeX;
       }

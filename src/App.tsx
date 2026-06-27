@@ -2,16 +2,21 @@ import { useState, useCallback, useEffect, Fragment } from "react";
 import {
   type ShapeState,
   type Point,
+  type SideShade,
   createInitialState,
   getAdjacentEmptyCells,
-  addCell,
+  getShapeGridBounds,
   removeCell,
+  cycleAdjacentSpot,
+  removeSideShade,
+  sideShadeEdgeLength,
 } from "./shapeState";
 import { buildShareUrl, loadStateFromUrl } from "./urlState";
 
 const DISPLAY_SIZE = 400; // canvas size in pixels (height config does not affect rendering)
 const VERTEX_RADIUS_GRID = 0.08; // in grid units
 const EDGE_STROKE_GRID = 0.04; // in grid units
+const DEFAULT_FIGMA_SCALE = 10;
 
 export interface ShapeConfig {
   gridSizeX: number;
@@ -71,6 +76,7 @@ interface PartsBreakdown {
   ratchetStraps: number;
   lagScrews: number;
   tarps: Map<string, { w: number; h: number; count: number }>;
+  sideTarps: Map<string, { w: number; h: number; count: number; angle: boolean }>;
 }
 
 function emptyPartsBreakdown(): PartsBreakdown {
@@ -81,6 +87,23 @@ function emptyPartsBreakdown(): PartsBreakdown {
     ratchetStraps: 0,
     lagScrews: 0,
     tarps: new Map(),
+    sideTarps: new Map(),
+  };
+}
+
+function roundFeet(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+function sideTarpDimensions(
+  side: SideShade,
+  gx: number,
+  gy: number,
+  height: number,
+): { w: number; h: number } {
+  return {
+    w: sideShadeEdgeLength(side, gx, gy),
+    h: roundFeet(height * 1.4),
   };
 }
 
@@ -224,6 +247,20 @@ function computePartsBreakdown(
   breakdown.footPlates = state.vertices.size;
   breakdown.lagScrews = breakdown.ratchetStraps;
 
+  for (const side of state.sideShades.values()) {
+    const { w, h } = sideTarpDimensions(side, gx, gy, height);
+    const sizeKey = `${side.type === "angle" ? "a" : "f"}:${w},${h}`;
+    const existing = breakdown.sideTarps.get(sizeKey);
+    if (existing) existing.count++;
+    else
+      breakdown.sideTarps.set(sizeKey, {
+        w,
+        h,
+        count: 1,
+        angle: side.type === "angle",
+      });
+  }
+
   return breakdown;
 }
 
@@ -243,6 +280,11 @@ function mergePartsBreakdowns(breakdowns: PartsBreakdown[]): PartsBreakdown {
       const existing = merged.tarps.get(key);
       if (existing) existing.count += entry.count;
       else merged.tarps.set(key, { ...entry });
+    }
+    for (const [key, entry] of b.sideTarps) {
+      const existing = merged.sideTarps.get(key);
+      if (existing) existing.count += entry.count;
+      else merged.sideTarps.set(key, { ...entry });
     }
   }
   return merged;
@@ -307,6 +349,17 @@ function partsBreakdownToEntries(breakdown: PartsBreakdown): PartEntry[] {
     entries.push({
       key: `tarp:${entry.w}x${entry.h}`,
       label: `Tarps (${entry.w} ft × ${entry.h} ft)`,
+      need: entry.count,
+    });
+  }
+  const sideTarpEntries = [...breakdown.sideTarps.values()].sort(
+    (a, b) => a.w - b.w || a.h - b.h || Number(a.angle) - Number(b.angle),
+  );
+  for (const entry of sideTarpEntries) {
+    const kind = entry.angle ? "45°" : "flat";
+    entries.push({
+      key: `side-tarp:${entry.angle ? "angle" : "flat"}:${entry.w}x${entry.h}`,
+      label: `Side tarps ${kind} (${entry.w} ft × ${entry.h} ft)`,
       need: entry.count,
     });
   }
@@ -379,8 +432,39 @@ function CopyListButton({
 }
 
 const INVENTORY_STORAGE_KEY = "shade-structure-inventory";
+const SETTINGS_STORAGE_KEY = "shade-structure-settings";
 
 type Inventory = Record<string, number>;
+
+interface AppSettings {
+  figmaScale: number;
+}
+
+const defaultSettings: AppSettings = {
+  figmaScale: DEFAULT_FIGMA_SCALE,
+};
+
+function loadSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...defaultSettings };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { ...defaultSettings };
+    }
+    const figmaScale = (parsed as { figmaScale?: unknown }).figmaScale;
+    return {
+      figmaScale:
+        typeof figmaScale === "number" &&
+        Number.isFinite(figmaScale) &&
+        figmaScale > 0
+          ? figmaScale
+          : DEFAULT_FIGMA_SCALE,
+    };
+  } catch {
+    return { ...defaultSettings };
+  }
+}
 
 function loadInventory(): Inventory {
   try {
@@ -411,9 +495,49 @@ function computeStructureDimensions(
   const gy = Math.max(1, config.gridSizeY);
   const xs = [...state.vertices.values()].map((p) => p.x);
   const ys = [...state.vertices.values()].map((p) => p.y);
-  const width = (Math.max(...xs) - Math.min(...xs)) * gx;
-  const height = (Math.max(...ys) - Math.min(...ys)) * gy;
-  return { width, height };
+  return {
+    width: (Math.max(...xs) - Math.min(...xs)) * gx,
+    height: (Math.max(...ys) - Math.min(...ys)) * gy,
+  };
+}
+
+function computeFullDimensionsWithAngledSideWalls(
+  config: ShapeConfig,
+  state: ShapeState,
+): { width: number; height: number } | null {
+  const angled = [...state.sideShades.values()].filter(
+    (side) => side.type === "angle",
+  );
+  if (angled.length === 0) return null;
+
+  const gx = Math.max(1, config.gridSizeX);
+  const gy = Math.max(1, config.gridSizeY);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const includeCell = (c: number, r: number) => {
+    minX = Math.min(minX, c);
+    minY = Math.min(minY, r);
+    maxX = Math.max(maxX, c + 1);
+    maxY = Math.max(maxY, r + 1);
+  };
+
+  for (const key of state.cells) {
+    const parts = key.split(",");
+    includeCell(Number(parts[0]), Number(parts[1]));
+  }
+  for (const side of angled) {
+    includeCell(side.c, side.r);
+  }
+
+  if (!Number.isFinite(minX)) return null;
+
+  return {
+    width: (maxX - minX) * gx,
+    height: (maxY - minY) * gy,
+  };
 }
 
 function structureTitle(
@@ -423,26 +547,207 @@ function structureTitle(
 ): string {
   const dims = computeStructureDimensions(config, state);
   if (!dims) return `Structure ${index + 1}`;
-  return `Structure ${dims.width}x${dims.height}`;
+  const base = `Structure ${dims.width}x${dims.height}`;
+  const full = computeFullDimensionsWithAngledSideWalls(config, state);
+  if (
+    !full ||
+    (full.width === dims.width && full.height === dims.height)
+  ) {
+    return base;
+  }
+  return `${base} (${full.width}x${full.height} with angle walls)`;
+}
+
+function sideShadePolygonPoints(side: SideShade): string {
+  const { c, r, attachC, attachR, type } = side;
+  const dc = attachC - c;
+  const dr = attachR - r;
+  const inset = 0.18;
+
+  if (type === "flat") {
+    if (dc === 1) {
+      return `${c + 1 - inset},${r} ${c + 1},${r} ${c + 1},${r + 1} ${c + 1 - inset},${r + 1}`;
+    }
+    if (dc === -1) {
+      return `${c + inset},${r} ${c},${r} ${c},${r + 1} ${c + inset},${r + 1}`;
+    }
+    if (dr === 1) {
+      return `${c},${r + 1 - inset} ${c},${r + 1} ${c + 1},${r + 1} ${c + 1},${r + 1 - inset}`;
+    }
+    return `${c},${r + inset} ${c},${r} ${c + 1},${r} ${c + 1},${r + inset}`;
+  }
+
+  // Half-cell right triangle: attachment edge + corner farthest from structure.
+  if (dc === 1) {
+    return `${c + 1},${r} ${c},${r + 1} ${c + 1},${r + 1}`;
+  }
+  if (dc === -1) {
+    return `${c},${r} ${c + 1},${r + 1} ${c},${r + 1}`;
+  }
+  if (dr === 1) {
+    return `${c},${r + 1} ${c},${r} ${c + 1},${r + 1}`;
+  }
+  return `${c},${r} ${c + 1},${r + 1} ${c + 1},${r}`;
+}
+
+function buildExportSvg(
+  config: ShapeConfig,
+  state: ShapeState,
+  figmaScale: number,
+): string {
+  const { minX, minY, maxX, maxY } = getShapeGridBounds(state);
+  const padding = 1;
+  const viewMinX = minX - padding;
+  const viewMinY = minY - padding;
+  const viewW = maxX - minX + 2 * padding;
+  const viewH = maxY - minY + 2 * padding;
+
+  const edges = [...state.edges]
+    .map((ek) => {
+      const parts = ek.split("|");
+      const a = parts[0] ?? "";
+      const b = parts[1] ?? "";
+      const pa = state.vertices.get(a);
+      const pb = state.vertices.get(b);
+      if (!pa || !pb) return null;
+      return { p1: pa, p2: pb };
+    })
+    .filter(Boolean) as { p1: Point; p2: Point }[];
+
+  const vertexPoints = [...state.vertices.values()];
+  const occupiedRects = [...state.cells].map((key) => {
+    const parts = key.split(",");
+    return { c: Number(parts[0]), r: Number(parts[1]) };
+  });
+  const sideShadeItems = [...state.sideShades.values()];
+
+  const gx = Math.max(1, config.gridSizeX);
+  const gy = Math.max(1, config.gridSizeY);
+  const viewMinXS = viewMinX * gx;
+  const viewMinYS = viewMinY * gy;
+  const viewWS = viewW * gx;
+  const viewHS = viewH * gy;
+  const exportGx = gx * figmaScale;
+  const exportGy = gy * figmaScale;
+  const exportViewMinX = viewMinXS * figmaScale;
+  const exportViewMinY = viewMinYS * figmaScale;
+  const exportViewW = viewWS * figmaScale;
+  const exportViewH = viewHS * figmaScale;
+
+  const cellRects = occupiedRects
+    .map(
+      ({ c, r }) =>
+        `<rect x="${c}" y="${r}" width="1" height="1" fill="rgba(120,113,108,0.12)" stroke="none"/>`,
+    )
+    .join("\n    ");
+
+  const sideShades = sideShadeItems
+    .map((side) => {
+      const isFlat = side.type === "flat";
+      const fill = isFlat
+        ? "rgba(14,116,144,0.45)"
+        : "rgba(180,83,9,0.45)";
+      const stroke = isFlat
+        ? "rgba(14,116,144,0.85)"
+        : "rgba(180,83,9,0.85)";
+      return `<polygon points="${sideShadePolygonPoints(side)}" fill="${fill}" stroke="${stroke}" stroke-width="0.035"/>`;
+    })
+    .join("\n    ");
+
+  const edgeLines = edges
+    .map(
+      (e) =>
+        `<line x1="${e.p1.x}" y1="${e.p1.y}" x2="${e.p2.x}" y2="${e.p2.y}" stroke="#444444" stroke-width="${EDGE_STROKE_GRID}" stroke-linecap="round"/>`,
+    )
+    .join("\n    ");
+
+  const vertexEllipses = vertexPoints
+    .map(
+      (v) =>
+        `<ellipse cx="${v.x}" cy="${v.y}" rx="${VERTEX_RADIUS_GRID}" ry="${VERTEX_RADIUS_GRID * (gx / gy)}" fill="#222222"/>`,
+    )
+    .join("\n    ");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${exportViewMinX} ${exportViewMinY} ${exportViewW} ${exportViewH}" width="${exportViewW}" height="${exportViewH}">
+  <g transform="scale(${exportGx}, ${exportGy})">
+    ${cellRects}
+    ${sideShades}
+    ${edgeLines}
+    ${vertexEllipses}
+  </g>
+</svg>`;
+}
+
+function downloadSvg(svg: string, filename: string): void {
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function ExportSvgButtons({
+  config,
+  state,
+  index,
+  figmaScale,
+}: {
+  config: ShapeConfig;
+  state: ShapeState;
+  index: number;
+  figmaScale: number;
+}) {
+  const [copied, setCopied] = useState(false);
+  const svg = buildExportSvg(config, state, figmaScale);
+  const dims = computeStructureDimensions(config, state);
+  const baseName = dims
+    ? `structure-${dims.width}x${dims.height}`
+    : `structure-${index + 1}`;
+
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2">
+      <button
+        type="button"
+        onClick={async () => {
+          const ok = await copyText(svg);
+          if (!ok) window.prompt("Copy this SVG:", svg);
+          else {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 2000);
+          }
+        }}
+        className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 shadow-sm hover:bg-stone-50"
+      >
+        {copied ? "Copied!" : "Copy SVG"}
+      </button>
+      <button
+        type="button"
+        onClick={() => downloadSvg(svg, `${baseName}.svg`)}
+        className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 shadow-sm hover:bg-stone-50"
+      >
+        Download SVG
+      </button>
+    </div>
+  );
 }
 
 function ShapeCanvas({
   config,
   state,
-  onAddCell,
+  onCycleAdjacentSpot,
   onRemoveCell,
+  onRemoveSideShade,
 }: {
   config: ShapeConfig;
   state: ShapeState;
-  onAddCell: (c: number, r: number) => void;
+  onCycleAdjacentSpot: (c: number, r: number) => void;
   onRemoveCell: (c: number, r: number) => void;
+  onRemoveSideShade: (c: number, r: number) => void;
 }) {
-  const allX = [...state.vertices.values()].map((p) => p.x);
-  const allY = [...state.vertices.values()].map((p) => p.y);
-  const minX = Math.min(0, ...allX);
-  const maxX = Math.max(1, ...allX);
-  const minY = Math.min(0, ...allY);
-  const maxY = Math.max(1, ...allY);
+  const { minX, minY, maxX, maxY } = getShapeGridBounds(state);
   const padding = 1;
   const viewMinX = minX - padding;
   const viewMinY = minY - padding;
@@ -480,6 +785,11 @@ function ShapeCanvas({
     const r = Number(parts[1]);
     return { key, c, r };
   });
+
+  const sideShadeItems = [...state.sideShades.values()].map((side) => ({
+    key: `${side.c},${side.r}`,
+    side,
+  }));
 
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
@@ -530,8 +840,33 @@ function ShapeCanvas({
             width={1}
             height={1}
             className="add-cell"
-            onClick={() => onAddCell(rect.c, rect.r)}
+            onClick={() => onCycleAdjacentSpot(rect.c, rect.r)}
           />
+        ))}
+        {sideShadeItems.map(({ key, side }) => (
+          <g
+            key={key}
+            className="side-shade"
+            onClick={() => onCycleAdjacentSpot(side.c, side.r)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onRemoveSideShade(side.c, side.r);
+            }}
+          >
+            <rect
+              x={side.c}
+              y={side.r}
+              width={1}
+              height={1}
+              className="side-shade-hit"
+            />
+            <polygon
+              points={sideShadePolygonPoints(side)}
+              className={
+                side.type === "flat" ? "side-shade-flat" : "side-shade-angle"
+              }
+            />
+          </g>
         ))}
         {occupiedRects.map((rect) => (
           <rect
@@ -541,6 +876,7 @@ function ShapeCanvas({
             width={1}
             height={1}
             className="occupied-cell"
+            onClick={() => onCycleAdjacentSpot(rect.c, rect.r)}
             onContextMenu={(e) => {
               e.preventDefault();
               onRemoveCell(rect.c, rect.r);
@@ -825,21 +1161,61 @@ function ConfigPanel({
   );
 }
 
+function SettingsMenu({
+  settings,
+  onChange,
+}: {
+  settings: AppSettings;
+  onChange: (settings: AppSettings) => void;
+}) {
+  return (
+    <details className="relative">
+      <summary className="cursor-pointer list-none rounded-lg border border-stone-300 bg-white px-3 py-1 text-sm font-medium text-stone-700 shadow-sm hover:bg-stone-50 [&::-webkit-details-marker]:hidden">
+        Settings
+      </summary>
+      <div className="absolute right-0 z-10 mt-2 w-56 rounded-lg border border-stone-200 bg-white p-4 shadow-lg">
+        <label className="block text-xs font-medium text-stone-600">
+          Figma scale
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={settings.figmaScale}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (!Number.isFinite(next) || next <= 0) return;
+              onChange({ ...settings, figmaScale: next });
+            }}
+            className="mt-1 w-full rounded border border-stone-300 px-2 py-1 text-sm text-stone-800"
+          />
+        </label>
+        <p className="mt-2 text-[11px] leading-snug text-stone-500">
+          Multiplier applied to SVG export dimensions for Figma.
+        </p>
+      </div>
+    </details>
+  );
+}
+
 function StructureRow({
   index,
   entry,
   canRemove,
+  figmaScale,
   onConfigChange,
-  onAddCell,
+  onCycleAdjacentSpot,
   onRemoveCell,
+  onRemoveSideShade,
   onRemoveRow,
 }: {
   index: number;
   entry: StructureEntry;
   canRemove: boolean;
+  figmaScale: number;
   onConfigChange: (config: ShapeConfig) => void;
-  onAddCell: (c: number, r: number) => void;
+  onCycleAdjacentSpot: (c: number, r: number) => void;
   onRemoveCell: (c: number, r: number) => void;
+  onRemoveSideShade: (c: number, r: number) => void;
   onRemoveRow: () => void;
 }) {
   return (
@@ -864,9 +1240,21 @@ function StructureRow({
             <ShapeCanvas
               config={entry.config}
               state={entry.state}
-              onAddCell={onAddCell}
+              onCycleAdjacentSpot={onCycleAdjacentSpot}
               onRemoveCell={onRemoveCell}
+              onRemoveSideShade={onRemoveSideShade}
             />
+            <div className="border-t border-stone-200 bg-stone-50 px-4 py-3">
+              <p className="mb-2 text-center text-xs font-medium text-stone-500">
+                Export for Figma
+              </p>
+              <ExportSvgButtons
+                config={entry.config}
+                state={entry.state}
+                index={index}
+                figmaScale={figmaScale}
+              />
+            </div>
           </div>
         </div>
         <ConfigPanel config={entry.config} onChange={onConfigChange} />
@@ -888,11 +1276,16 @@ export default function App() {
   const [inventory, setInventory] = useState<Inventory>(
     () => initialState.inventory,
   );
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
   }, [inventory]);
+
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [settings]);
 
   const setHave = useCallback((key: string, have: number) => {
     setInventory((prev) => {
@@ -964,9 +1357,11 @@ export default function App() {
             >
               {shareCopied ? "Copied!" : "Share"}
             </button>
+            <SettingsMenu settings={settings} onChange={setSettings} />
           </div>
           <p className="text-stone-500 text-sm mb-8 text-center">
-            Click a ghost square to add; right‑click a filled square to remove.
+            Click to add a cell or cycle shade → flat wall → 45° wall. Spots
+            bordering multiple cells skip wall states. Right‑click to remove.
           </p>
 
           <div className="flex w-full flex-col items-center gap-12">
@@ -976,19 +1371,26 @@ export default function App() {
                 index={index}
                 entry={entry}
                 canRemove={structures.length > 1}
+                figmaScale={settings.figmaScale}
                 onConfigChange={(config) =>
                   updateStructure(entry.id, (e) => ({ ...e, config }))
                 }
-                onAddCell={(c, r) =>
+                onCycleAdjacentSpot={(c, r) =>
                   updateStructure(entry.id, (e) => ({
                     ...e,
-                    state: addCell(e.state, c, r),
+                    state: cycleAdjacentSpot(e.state, c, r),
                   }))
                 }
                 onRemoveCell={(c, r) =>
                   updateStructure(entry.id, (e) => ({
                     ...e,
                     state: removeCell(e.state, c, r),
+                  }))
+                }
+                onRemoveSideShade={(c, r) =>
+                  updateStructure(entry.id, (e) => ({
+                    ...e,
+                    state: removeSideShade(e.state, c, r),
                   }))
                 }
                 onRemoveRow={() => removeStructure(entry.id)}
