@@ -406,6 +406,56 @@ function partsBreakdownToEntries(breakdown: PartsBreakdown): PartEntry[] {
   return entries;
 }
 
+interface InventoryShortInfo {
+  short: number;
+  coveredByLargerConnectors: boolean;
+}
+
+function computeInventoryShorts(
+  entries: PartEntry[],
+  inventory: Inventory,
+): Map<string, InventoryShortInfo> {
+  const result = new Map<string, InventoryShortInfo>();
+  const connectorEntries = entries.filter((e) =>
+    e.key.startsWith("connector:"),
+  );
+  const connectorSizes = connectorEntries
+    .map((e) => Number(e.key.slice("connector:".length)))
+    .sort((a, b) => a - b);
+
+  let surplusFromLarger = 0;
+  const connectorShorts = new Map<string, InventoryShortInfo>();
+  for (let i = connectorSizes.length - 1; i >= 0; i--) {
+    const size = connectorSizes[i]!;
+    const key = `connector:${size}`;
+    const entry = connectorEntries.find((e) => e.key === key);
+    if (!entry) continue;
+    const have = inventory[key] ?? 0;
+    const rawShort = Math.max(0, entry.need - have);
+    const totalAvailable = have + surplusFromLarger;
+    const short = Math.max(0, entry.need - totalAvailable);
+    surplusFromLarger = Math.max(0, totalAvailable - entry.need);
+    connectorShorts.set(key, {
+      short,
+      coveredByLargerConnectors: rawShort > 0 && short === 0,
+    });
+  }
+
+  for (const entry of entries) {
+    const connectorInfo = connectorShorts.get(entry.key);
+    if (connectorInfo) {
+      result.set(entry.key, connectorInfo);
+      continue;
+    }
+    const have = inventory[entry.key] ?? 0;
+    result.set(entry.key, {
+      short: Math.max(0, entry.need - have),
+      coveredByLargerConnectors: false,
+    });
+  }
+  return result;
+}
+
 function entriesToTsv(
   entries: PartEntry[],
   inventory?: Inventory,
@@ -413,11 +463,12 @@ function entriesToTsv(
   const rows: string[][] = inventory
     ? [["Part", "Need", "Have", "Short"]]
     : [["Part", "Need"]];
+  const shorts = inventory ? computeInventoryShorts(entries, inventory) : null;
 
   for (const entry of entries) {
     if (inventory) {
       const have = inventory[entry.key] ?? 0;
-      const short = Math.max(0, entry.need - have);
+      const short = shorts!.get(entry.key)?.short ?? Math.max(0, entry.need - have);
       rows.push([
         entry.label,
         String(entry.need),
@@ -430,6 +481,20 @@ function entriesToTsv(
   }
 
   return rows.map((row) => row.join("\t")).join("\n");
+}
+
+function HintTooltip({ label }: { label: string }) {
+  return (
+    <span className="group relative ml-0.5 inline-block text-stone-400">
+      *
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute right-[calc(100%+6px)] top-1/2 z-50 w-max max-w-[11rem] -translate-y-1/2 rounded bg-stone-800 px-2 py-1 text-right text-[10px] font-normal leading-snug text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100"
+      >
+        {label}
+      </span>
+    </span>
+  );
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -994,6 +1059,7 @@ function PartsListRows({
   const withInventory = inventory !== undefined && onSetHave !== undefined;
 
   if (withInventory) {
+    const shorts = computeInventoryShorts(entries, inventory);
     return (
       <div className="grid grid-cols-[minmax(0,1fr)_2.5rem_3rem_2.5rem] gap-x-3 text-xs text-stone-800">
         <div className="border-b border-stone-200 pb-1.5 text-[11px] font-medium text-stone-500">
@@ -1009,8 +1075,10 @@ function PartsListRows({
           Short
         </div>
         {entries.map((entry) => {
-          const have = inventory[entry.key] ?? 0;
-          const short = Math.max(0, entry.need - have);
+          const { short, coveredByLargerConnectors } = shorts.get(entry.key) ?? {
+            short: Math.max(0, entry.need - (inventory[entry.key] ?? 0)),
+            coveredByLargerConnectors: false,
+          };
           return (
             <Fragment key={entry.key}>
               <div className="min-w-0 border-t border-stone-100 py-1.5 leading-snug">
@@ -1039,11 +1107,14 @@ function PartsListRows({
                 />
               </div>
               <div
-                className={`border-t border-stone-100 py-1.5 text-right tabular-nums ${
+                className={`relative overflow-visible border-t border-stone-100 py-1.5 text-right tabular-nums ${
                   short > 0 ? "font-medium text-amber-800" : "text-stone-500"
                 }`}
               >
                 {short}
+                {coveredByLargerConnectors && (
+                  <HintTooltip label="Enough larger connectors on hand to cover this shortfall" />
+                )}
               </div>
             </Fragment>
           );
