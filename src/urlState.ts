@@ -11,7 +11,6 @@ const DEFAULT_CONFIG = {
   gridSizeY: 10,
   height: 10,
   preferUniversalConnectors: false,
-  prefer2CellTarps: true,
 };
 
 interface SerializedSideShade {
@@ -43,7 +42,6 @@ export interface DecodedConfig {
   gridSizeY: number;
   height: number;
   preferUniversalConnectors: boolean;
-  prefer2CellTarps: boolean;
 }
 
 export interface DecodedStructure {
@@ -133,7 +131,6 @@ function parseConfig(raw: SerializedStructure): DecodedConfig {
     gridSizeY: Math.max(1, Math.floor(raw.gy ?? DEFAULT_CONFIG.gridSizeY)),
     height: Math.max(1, Math.floor(raw.h ?? DEFAULT_CONFIG.height)),
     preferUniversalConnectors: raw.u ?? DEFAULT_CONFIG.preferUniversalConnectors,
-    prefer2CellTarps: raw.t ?? DEFAULT_CONFIG.prefer2CellTarps,
   };
 }
 
@@ -220,7 +217,6 @@ export function encodeAppState(
       }
       if (config.height !== DEFAULT_CONFIG.height) entry.h = config.height;
       if (config.preferUniversalConnectors) entry.u = true;
-      if (!config.prefer2CellTarps) entry.t = false;
       return entry;
     }),
   };

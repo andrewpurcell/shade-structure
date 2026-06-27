@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, Fragment } from "react";
+import { useState, useCallback, useEffect, useMemo, useId, Fragment } from "react";
 import {
   type ShapeState,
   type Point,
@@ -23,7 +23,6 @@ export interface ShapeConfig {
   gridSizeY: number;
   height: number;
   preferUniversalConnectors: boolean;
-  prefer2CellTarps: boolean;
 }
 
 const defaultConfig: ShapeConfig = {
@@ -31,8 +30,9 @@ const defaultConfig: ShapeConfig = {
   gridSizeY: 10,
   height: 10,
   preferUniversalConnectors: false,
-  prefer2CellTarps: true,
 };
+
+type TarpMode = "optimal" | "use-inventory";
 
 interface StructureEntry {
   id: string;
@@ -123,19 +123,15 @@ interface TarpOverlay {
   cells: Array<{ c: number; r: number }>;
 }
 
-function computeTarpOverlays(
-  config: ShapeConfig,
-  state: ShapeState,
-): TarpOverlay[] {
+function tarpInventoryKey(w: number, h: number): string {
+  const lo = Math.min(w, h);
+  const hi = Math.max(w, h);
+  return `tarp:${lo}x${hi}`;
+}
+
+function computeOptimalTarpOverlays(state: ShapeState): TarpOverlay[] {
   const cellKeys = [...state.cells];
   if (cellKeys.length === 0) return [];
-
-  if (!config.prefer2CellTarps) {
-    return cellKeys.map((k) => ({
-      kind: "single" as const,
-      cells: [parseCellKey(k)],
-    }));
-  }
 
   const cellSet = new Set(cellKeys);
   const leftCells = cellKeys.filter((k) => {
@@ -194,6 +190,49 @@ function computeTarpOverlays(
   return overlays;
 }
 
+function splitPairsUsingInventory(
+  overlays: TarpOverlay[],
+  gx: number,
+  gy: number,
+  remainingSingles: Map<string, number>,
+): TarpOverlay[] {
+  const key = tarpInventoryKey(gx, gy);
+  const result: TarpOverlay[] = [];
+  for (const overlay of overlays) {
+    if (overlay.kind === "single") {
+      result.push(overlay);
+      continue;
+    }
+    const available = remainingSingles.get(key) ?? 0;
+    if (available >= 2) {
+      remainingSingles.set(key, available - 2);
+      for (const cell of overlay.cells) {
+        result.push({ kind: "single", cells: [cell] });
+      }
+    } else {
+      result.push(overlay);
+    }
+  }
+  return result;
+}
+
+function computeTarpOverlays(
+  config: ShapeConfig,
+  state: ShapeState,
+  tarpMode: TarpMode,
+  remainingSingles?: Map<string, number>,
+): TarpOverlay[] {
+  const cellKeys = [...state.cells];
+  if (cellKeys.length === 0) return [];
+
+  const optimal = computeOptimalTarpOverlays(state);
+  if (tarpMode === "optimal" || !remainingSingles) return optimal;
+
+  const gx = Math.max(1, config.gridSizeX);
+  const gy = Math.max(1, config.gridSizeY);
+  return splitPairsUsingInventory(optimal, gx, gy, remainingSingles);
+}
+
 function tarpOverlayDimensions(
   overlay: TarpOverlay,
   gx: number,
@@ -207,6 +246,8 @@ function tarpOverlayDimensions(
 function computePartsBreakdown(
   config: ShapeConfig,
   state: ShapeState,
+  tarpMode: TarpMode,
+  remainingSingles?: Map<string, number>,
 ): PartsBreakdown {
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
@@ -214,7 +255,12 @@ function computePartsBreakdown(
 
   const breakdown = emptyPartsBreakdown();
 
-  const overlays = computeTarpOverlays(config, state);
+  const overlays = computeTarpOverlays(
+    config,
+    state,
+    tarpMode,
+    remainingSingles,
+  );
   if (overlays.length > 0) {
     const canonical = (a: number, b: number) =>
       [Math.min(a, b), Math.max(a, b)] as const;
@@ -330,6 +376,72 @@ function mergePartsBreakdowns(breakdowns: PartsBreakdown[]): PartsBreakdown {
   return merged;
 }
 
+function inventorySinglesBudget(inventory: Inventory): Map<string, number> {
+  const budget = new Map<string, number>();
+  for (const [key, count] of Object.entries(inventory)) {
+    if (key.startsWith("tarp:") && count > 0) {
+      budget.set(key, count);
+    }
+  }
+  return budget;
+}
+
+function computeCombinedPartsBreakdown(
+  structures: StructureEntry[],
+  tarpMode: TarpMode,
+  inventory: Inventory,
+): PartsBreakdown {
+  const remainingSingles =
+    tarpMode === "use-inventory"
+      ? inventorySinglesBudget(inventory)
+      : undefined;
+  const breakdowns = structures.map((s) =>
+    computePartsBreakdown(
+      s.config,
+      s.state,
+      tarpMode,
+      remainingSingles,
+    ),
+  );
+  return mergePartsBreakdowns(breakdowns);
+}
+
+function computeStructureBreakdowns(
+  structures: StructureEntry[],
+  tarpMode: TarpMode,
+  inventory: Inventory,
+): PartsBreakdown[] {
+  const remainingSingles =
+    tarpMode === "use-inventory"
+      ? inventorySinglesBudget(inventory)
+      : undefined;
+  return structures.map((s) =>
+    computePartsBreakdown(s.config, s.state, tarpMode, remainingSingles),
+  );
+}
+
+function computeTarpOverlaysForStructure(
+  structures: StructureEntry[],
+  structureIndex: number,
+  tarpMode: TarpMode,
+  inventory: Inventory,
+): TarpOverlay[] {
+  const remainingSingles =
+    tarpMode === "use-inventory"
+      ? inventorySinglesBudget(inventory)
+      : undefined;
+  for (let i = 0; i < structureIndex; i++) {
+    const s = structures[i]!;
+    computeTarpOverlays(s.config, s.state, tarpMode, remainingSingles);
+  }
+  const entry = structures[structureIndex]!;
+  return computeTarpOverlays(
+    entry.config,
+    entry.state,
+    tarpMode,
+    remainingSingles,
+  );
+}
 
 interface PartEntry {
   key: string;
@@ -544,11 +656,13 @@ type Inventory = Record<string, number>;
 interface AppSettings {
   figmaScale: number;
   showTarpOverlay: boolean;
+  tarpMode: TarpMode;
 }
 
 const defaultSettings: AppSettings = {
   figmaScale: DEFAULT_FIGMA_SCALE,
   showTarpOverlay: false,
+  tarpMode: "optimal",
 };
 
 function loadSettings(): AppSettings {
@@ -562,9 +676,11 @@ function loadSettings(): AppSettings {
     const record = parsed as {
       figmaScale?: unknown;
       showTarpOverlay?: unknown;
+      tarpMode?: unknown;
     };
     const figmaScale = record.figmaScale;
     const showTarpOverlay = record.showTarpOverlay;
+    const tarpMode = record.tarpMode;
     return {
       figmaScale:
         typeof figmaScale === "number" &&
@@ -574,6 +690,10 @@ function loadSettings(): AppSettings {
           : DEFAULT_FIGMA_SCALE,
       showTarpOverlay:
         typeof showTarpOverlay === "boolean" ? showTarpOverlay : false,
+      tarpMode:
+        tarpMode === "use-inventory" || tarpMode === "optimal"
+          ? tarpMode
+          : "optimal",
     };
   } catch {
     return { ...defaultSettings };
@@ -852,6 +972,7 @@ function ShapeCanvas({
   config,
   state,
   showTarpOverlay,
+  tarpOverlays,
   onCycleAdjacentSpot,
   onRemoveCell,
   onRemoveSideShade,
@@ -859,6 +980,7 @@ function ShapeCanvas({
   config: ShapeConfig;
   state: ShapeState;
   showTarpOverlay: boolean;
+  tarpOverlays: TarpOverlay[];
   onCycleAdjacentSpot: (c: number, r: number) => void;
   onRemoveCell: (c: number, r: number) => void;
   onRemoveSideShade: (c: number, r: number) => void;
@@ -917,7 +1039,7 @@ function ShapeCanvas({
   const displayWidth = (DISPLAY_SIZE * viewWS) / L;
   const displayHeight = (DISPLAY_SIZE * viewHS) / L;
   const viewBoxScaled = `${viewMinXS} ${viewMinYS} ${viewWS} ${viewHS}`;
-  const tarpOverlays = showTarpOverlay ? computeTarpOverlays(config, state) : [];
+  const visibleOverlays = showTarpOverlay ? tarpOverlays : [];
 
   return (
     <svg
@@ -1000,7 +1122,7 @@ function ShapeCanvas({
             }}
           />
         ))}
-        {tarpOverlays.map((overlay, i) => {
+        {visibleOverlays.map((overlay, i) => {
           const cs = overlay.cells.map((cell) => cell.c);
           const rs = overlay.cells.map((cell) => cell.r);
           const x = Math.min(...cs);
@@ -1146,19 +1268,15 @@ function PartsListRows({
 }
 
 function PartsList({
-  config,
-  state,
+  breakdown,
   title = "Parts list",
   className = "",
 }: {
-  config: ShapeConfig;
-  state: ShapeState;
+  breakdown: PartsBreakdown;
   title?: string;
   className?: string;
 }) {
-  const entries = partsBreakdownToEntries(
-    computePartsBreakdown(config, state),
-  );
+  const entries = partsBreakdownToEntries(breakdown);
   const tsv = entriesToTsv(entries);
 
   return (
@@ -1182,17 +1300,24 @@ function CombinedPartsList({
   structures,
   className = "",
   inventory,
+  tarpMode,
+  onTarpModeChange,
   onSetHave,
   onClearInventory,
 }: {
   structures: StructureEntry[];
   className?: string;
   inventory: Inventory;
+  tarpMode: TarpMode;
+  onTarpModeChange: (mode: TarpMode) => void;
   onSetHave: (key: string, have: number) => void;
   onClearInventory: () => void;
 }) {
-  const breakdown = mergePartsBreakdowns(
-    structures.map((s) => computePartsBreakdown(s.config, s.state)),
+  const radioGroupName = useId();
+  const breakdown = computeCombinedPartsBreakdown(
+    structures,
+    tarpMode,
+    inventory,
   );
   const entries = partsBreakdownToEntries(breakdown);
   const hasInventory = Object.keys(inventory).length > 0;
@@ -1218,6 +1343,29 @@ function CombinedPartsList({
           </button>
         </div>
       </div>
+      <fieldset className="mb-3 flex gap-3 border-0 p-0">
+        <legend className="sr-only">Tarp sizing</legend>
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <input
+            type="radio"
+            name={radioGroupName}
+            checked={tarpMode === "use-inventory"}
+            onChange={() => onTarpModeChange("use-inventory")}
+            className="border-stone-300"
+          />
+          <span className="text-[11px] text-stone-700">Use what I have</span>
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <input
+            type="radio"
+            name={radioGroupName}
+            checked={tarpMode === "optimal"}
+            onChange={() => onTarpModeChange("optimal")}
+            className="border-stone-300"
+          />
+          <span className="text-[11px] text-stone-700">Optimal</span>
+        </label>
+      </fieldset>
       {entries.length > 0 ? (
         <PartsListRows
           entries={entries}
@@ -1297,17 +1445,6 @@ function ConfigPanel({
             Prefer universal connectors
           </span>
         </label>
-        <label className="flex items-start gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={config.prefer2CellTarps}
-            onChange={(e) => set({ prefer2CellTarps: e.target.checked })}
-            className="mt-0.5 rounded border-stone-300 shrink-0"
-          />
-          <span className="text-[11px] leading-tight text-stone-700">
-            Prefer 2-cell tarps
-          </span>
-        </label>
       </div>
     </aside>
   );
@@ -1368,6 +1505,8 @@ function StructureRow({
   canRemove,
   figmaScale,
   showTarpOverlay,
+  tarpOverlays,
+  partsBreakdown,
   onToggleTarpOverlay,
   onConfigChange,
   onCycleAdjacentSpot,
@@ -1380,6 +1519,8 @@ function StructureRow({
   canRemove: boolean;
   figmaScale: number;
   showTarpOverlay: boolean;
+  tarpOverlays: TarpOverlay[];
+  partsBreakdown: PartsBreakdown;
   onToggleTarpOverlay: (show: boolean) => void;
   onConfigChange: (config: ShapeConfig) => void;
   onCycleAdjacentSpot: (c: number, r: number) => void;
@@ -1421,6 +1562,7 @@ function StructureRow({
               config={entry.config}
               state={entry.state}
               showTarpOverlay={showTarpOverlay}
+              tarpOverlays={tarpOverlays}
               onCycleAdjacentSpot={onCycleAdjacentSpot}
               onRemoveCell={onRemoveCell}
               onRemoveSideShade={onRemoveSideShade}
@@ -1440,8 +1582,7 @@ function StructureRow({
         </div>
         <ConfigPanel config={entry.config} onChange={onConfigChange} />
         <PartsList
-          config={entry.config}
-          state={entry.state}
+          breakdown={partsBreakdown}
           className="w-full sm:w-56"
         />
       </div>
@@ -1513,6 +1654,16 @@ export default function App() {
     }
   }, [structures, inventory]);
 
+  const structureBreakdowns = useMemo(
+    () =>
+      computeStructureBreakdowns(
+        structures,
+        settings.tarpMode,
+        inventory,
+      ),
+    [structures, settings.tarpMode, inventory],
+  );
+
   return (
     <main className="min-h-screen bg-stone-100 p-4 sm:p-8">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 lg:flex-row lg:items-start lg:gap-6">
@@ -1520,6 +1671,10 @@ export default function App() {
           <CombinedPartsList
             structures={structures}
             inventory={inventory}
+            tarpMode={settings.tarpMode}
+            onTarpModeChange={(tarpMode) =>
+              setSettings((prev) => ({ ...prev, tarpMode }))
+            }
             onSetHave={setHave}
             onClearInventory={clearInventory}
             className="shadow-lg max-h-[calc(100vh-4rem)] overflow-y-auto"
@@ -1554,6 +1709,13 @@ export default function App() {
                 canRemove={structures.length > 1}
                 figmaScale={settings.figmaScale}
                 showTarpOverlay={settings.showTarpOverlay}
+                tarpOverlays={computeTarpOverlaysForStructure(
+                  structures,
+                  index,
+                  settings.tarpMode,
+                  inventory,
+                )}
+                partsBreakdown={structureBreakdowns[index] ?? emptyPartsBreakdown()}
                 onToggleTarpOverlay={(show) =>
                   setSettings((prev) => ({ ...prev, showTarpOverlay: show }))
                 }
@@ -1593,6 +1755,10 @@ export default function App() {
             <CombinedPartsList
               structures={structures}
               inventory={inventory}
+              tarpMode={settings.tarpMode}
+              onTarpModeChange={(tarpMode) =>
+                setSettings((prev) => ({ ...prev, tarpMode }))
+              }
               onSetHave={setHave}
               onClearInventory={clearInventory}
               className="w-full max-w-4xl lg:hidden"
