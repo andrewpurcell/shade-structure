@@ -146,11 +146,14 @@ function parseInventory(raw: unknown): Record<string, number> {
 }
 
 function readEncodedParam(): string | null {
+  const fromSearch = new URLSearchParams(window.location.search).get("s");
+  if (fromSearch && fromSearch.length > 0) return fromSearch;
+
+  // Legacy hash format (#s=...)
   const hash = window.location.hash.slice(1);
   if (!hash) return null;
-  const params = new URLSearchParams(hash);
-  const encoded = params.get("s");
-  return encoded && encoded.length > 0 ? encoded : null;
+  const fromHash = new URLSearchParams(hash).get("s");
+  return fromHash && fromHash.length > 0 ? fromHash : null;
 }
 
 export function loadStateFromUrl(): DecodedAppState | null {
@@ -231,6 +234,8 @@ export function buildShareUrl(
   inventory: Record<string, number>,
 ): string {
   const url = new URL(window.location.href);
-  url.hash = `s=${encodeAppState(structures, inventory)}`;
+  url.hash = "";
+  url.search = "";
+  url.searchParams.set("s", encodeAppState(structures, inventory));
   return url.toString();
 }
