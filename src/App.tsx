@@ -551,6 +551,16 @@ interface InventoryShortInfo {
   coveredByLargerConnectors: boolean;
 }
 
+function canCoverWithLargerConnector(
+  largerSlots: number,
+  neededSlots: number,
+): boolean {
+  if (largerSlots <= neededSlots) return false;
+  // 3-way connectors cannot substitute for 2-way; 4- and 5-way can.
+  if (neededSlots === 2 && largerSlots === 3) return false;
+  return true;
+}
+
 function computeInventoryShorts(
   entries: PartEntry[],
   inventory: Inventory,
@@ -563,7 +573,7 @@ function computeInventoryShorts(
     .map((e) => Number(e.key.slice("connector:".length)))
     .sort((a, b) => a - b);
 
-  let surplusFromLarger = 0;
+  const surplusBySize = new Map<number, number>();
   const connectorShorts = new Map<string, InventoryShortInfo>();
   for (let i = connectorSizes.length - 1; i >= 0; i--) {
     const size = connectorSizes[i]!;
@@ -572,9 +582,21 @@ function computeInventoryShorts(
     if (!entry) continue;
     const have = inventory[key] ?? 0;
     const rawShort = Math.max(0, entry.need - have);
-    const totalAvailable = have + surplusFromLarger;
-    const short = Math.max(0, entry.need - totalAvailable);
-    surplusFromLarger = Math.max(0, totalAvailable - entry.need);
+
+    let remainingNeed = Math.max(0, entry.need - have);
+    for (let j = connectorSizes.length - 1; j > i; j--) {
+      const largerSize = connectorSizes[j]!;
+      if (!canCoverWithLargerConnector(largerSize, size)) continue;
+      const available = surplusBySize.get(largerSize) ?? 0;
+      const used = Math.min(available, remainingNeed);
+      if (used > 0) {
+        surplusBySize.set(largerSize, available - used);
+        remainingNeed -= used;
+      }
+    }
+
+    const short = remainingNeed;
+    surplusBySize.set(size, Math.max(0, have - entry.need));
     connectorShorts.set(key, {
       short,
       coveredByLargerConnectors: rawShort > 0 && short === 0,
@@ -1637,6 +1659,11 @@ export default function App() {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
 
+  useEffect(() => {
+    const url = buildShareUrl(structures, inventory);
+    window.history.replaceState(null, "", url);
+  }, [structures, inventory]);
+
   const setHave = useCallback((key: string, have: number) => {
     setInventory((prev) => {
       const next = { ...prev };
@@ -1672,7 +1699,6 @@ export default function App() {
 
   const handleShare = useCallback(async () => {
     const url = buildShareUrl(structures, inventory);
-    window.history.replaceState(null, "", url);
     try {
       await navigator.clipboard.writeText(url);
       setShareCopied(true);
