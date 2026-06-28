@@ -54,21 +54,45 @@ export interface DecodedAppState {
   inventory: Record<string, number>;
 }
 
-function toBase64Url(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+const COMPRESSED_PREFIX = "z.";
+
+function toBase64UrlBytes(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64Url(encoded: string): string {
+function fromBase64UrlToBytes(encoded: string): Uint8Array {
   const padded = encoded.replace(/-/g, "+").replace(/_/g, "/");
   const pad = padded.length % 4;
   const base64 = pad ? padded + "=".repeat(4 - pad) : padded;
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
+}
+
+function toBase64Url(text: string): string {
+  return toBase64UrlBytes(new TextEncoder().encode(text));
+}
+
+function fromBase64Url(encoded: string): string {
+  return new TextDecoder().decode(fromBase64UrlToBytes(encoded));
+}
+
+async function gzipToBase64Url(text: string): Promise<string> {
+  const compressed = await new Response(
+    new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+  ).arrayBuffer();
+  return toBase64UrlBytes(new Uint8Array(compressed));
+}
+
+async function gunzipFromBase64Url(encoded: string): Promise<string> {
+  const bytes = fromBase64UrlToBytes(encoded);
+  const decompressed = await new Response(
+    new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")),
+  ).arrayBuffer();
+  return new TextDecoder().decode(decompressed);
 }
 
 function stateFromCells(
@@ -156,46 +180,15 @@ function readEncodedParam(): string | null {
   return fromHash && fromHash.length > 0 ? fromHash : null;
 }
 
-export function loadStateFromUrl(): DecodedAppState | null {
+export function isCompressedUrlState(): boolean {
   const encoded = readEncodedParam();
-  if (!encoded) return null;
-
-  try {
-    const parsed: unknown = JSON.parse(fromBase64Url(encoded));
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const data = parsed as Partial<SerializedAppState>;
-    if (data.v !== 1 || !Array.isArray(data.s) || data.s.length === 0) {
-      return null;
-    }
-
-    const structures: DecodedStructure[] = [];
-    for (const raw of data.s) {
-      if (typeof raw !== "object" || raw === null || !Array.isArray(raw.c)) {
-        continue;
-      }
-      const cells = raw.c.filter((key): key is string => typeof key === "string");
-      if (cells.length === 0) continue;
-      structures.push({
-        config: parseConfig(raw),
-        state: stateFromCells(cells, parseSideShades(raw.w)),
-      });
-    }
-
-    if (structures.length === 0) return null;
-
-    return {
-      structures,
-      inventory: parseInventory(data.i),
-    };
-  } catch {
-    return null;
-  }
+  return encoded?.startsWith(COMPRESSED_PREFIX) ?? false;
 }
 
-export function encodeAppState(
+function buildSerializedPayload(
   structures: Array<{ config: DecodedConfig; state: ShapeState }>,
   inventory: Record<string, number>,
-): string {
+): SerializedAppState {
   const payload: SerializedAppState = {
     v: 1,
     s: structures.map(({ config, state }) => {
@@ -226,16 +219,88 @@ export function encodeAppState(
 
   if (Object.keys(inventory).length > 0) payload.i = inventory;
 
-  return toBase64Url(JSON.stringify(payload));
+  return payload;
 }
 
-export function buildShareUrl(
+function parseAppStateJson(json: string): DecodedAppState | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const data = parsed as Partial<SerializedAppState>;
+    if (data.v !== 1 || !Array.isArray(data.s) || data.s.length === 0) {
+      return null;
+    }
+
+    const structures: DecodedStructure[] = [];
+    for (const raw of data.s) {
+      if (typeof raw !== "object" || raw === null || !Array.isArray(raw.c)) {
+        continue;
+      }
+      const cells = raw.c.filter((key): key is string => typeof key === "string");
+      if (cells.length === 0) continue;
+      structures.push({
+        config: parseConfig(raw),
+        state: stateFromCells(cells, parseSideShades(raw.w)),
+      });
+    }
+
+    if (structures.length === 0) return null;
+
+    return {
+      structures,
+      inventory: parseInventory(data.i),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function decodePayload(encoded: string): Promise<string | null> {
+  try {
+    if (encoded.startsWith(COMPRESSED_PREFIX)) {
+      return await gunzipFromBase64Url(encoded.slice(COMPRESSED_PREFIX.length));
+    }
+    return fromBase64Url(encoded);
+  } catch {
+    return null;
+  }
+}
+
+export function loadStateFromUrlSync(): DecodedAppState | null {
+  const encoded = readEncodedParam();
+  if (!encoded || encoded.startsWith(COMPRESSED_PREFIX)) return null;
+
+  const json = fromBase64Url(encoded);
+  return parseAppStateJson(json);
+}
+
+export async function loadStateFromUrl(): Promise<DecodedAppState | null> {
+  const encoded = readEncodedParam();
+  if (!encoded) return null;
+
+  const json = await decodePayload(encoded);
+  if (!json) return null;
+  return parseAppStateJson(json);
+}
+
+export async function encodeAppState(
   structures: Array<{ config: DecodedConfig; state: ShapeState }>,
   inventory: Record<string, number>,
-): string {
+): Promise<string> {
+  const json = JSON.stringify(buildSerializedPayload(structures, inventory));
+  if (typeof CompressionStream === "undefined") {
+    return toBase64Url(json);
+  }
+  return COMPRESSED_PREFIX + (await gzipToBase64Url(json));
+}
+
+export async function buildShareUrl(
+  structures: Array<{ config: DecodedConfig; state: ShapeState }>,
+  inventory: Record<string, number>,
+): Promise<string> {
   const url = new URL(window.location.href);
   url.hash = "";
   url.search = "";
-  url.searchParams.set("s", encodeAppState(structures, inventory));
+  url.searchParams.set("s", await encodeAppState(structures, inventory));
   return url.toString();
 }

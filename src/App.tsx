@@ -11,7 +11,7 @@ import {
   removeSideShade,
   sideShadeEdgeLength,
 } from "./shapeState";
-import { buildShareUrl, loadStateFromUrl } from "./urlState";
+import { buildShareUrl, isCompressedUrlState, loadStateFromUrl, loadStateFromUrlSync } from "./urlState";
 
 const DISPLAY_SIZE = 400; // canvas size in pixels (height config does not affect rendering)
 const VERTEX_RADIUS_GRID = 0.08; // in grid units
@@ -52,7 +52,7 @@ function getInitialAppState(): {
   structures: StructureEntry[];
   inventory: Inventory;
 } {
-  const fromUrl = loadStateFromUrl();
+  const fromUrl = loadStateFromUrlSync();
   if (fromUrl) {
     return {
       structures: fromUrl.structures.map((s) => ({
@@ -1650,6 +1650,30 @@ export default function App() {
   );
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [shareCopied, setShareCopied] = useState(false);
+  const [urlHydrated, setUrlHydrated] = useState(() => !isCompressedUrlState());
+
+  useEffect(() => {
+    if (!isCompressedUrlState()) return;
+    let cancelled = false;
+    void loadStateFromUrl().then((fromUrl) => {
+      if (cancelled || !fromUrl) {
+        if (!cancelled) setUrlHydrated(true);
+        return;
+      }
+      setStructures(
+        fromUrl.structures.map((s) => ({
+          id: crypto.randomUUID(),
+          config: { ...s.config },
+          state: s.state,
+        })),
+      );
+      setInventory(fromUrl.inventory);
+      setUrlHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(INVENTORY_STORAGE_KEY, JSON.stringify(inventory));
@@ -1660,9 +1684,15 @@ export default function App() {
   }, [settings]);
 
   useEffect(() => {
-    const url = buildShareUrl(structures, inventory);
-    window.history.replaceState(null, "", url);
-  }, [structures, inventory]);
+    if (!urlHydrated) return;
+    let cancelled = false;
+    void buildShareUrl(structures, inventory).then((url) => {
+      if (!cancelled) window.history.replaceState(null, "", url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [structures, inventory, urlHydrated]);
 
   const setHave = useCallback((key: string, have: number) => {
     setInventory((prev) => {
@@ -1698,7 +1728,7 @@ export default function App() {
   }, []);
 
   const handleShare = useCallback(async () => {
-    const url = buildShareUrl(structures, inventory);
+    const url = await buildShareUrl(structures, inventory);
     try {
       await navigator.clipboard.writeText(url);
       setShareCopied(true);
