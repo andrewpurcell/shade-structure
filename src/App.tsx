@@ -785,6 +785,35 @@ function computeStructureDimensions(
   };
 }
 
+function extendBoundsForAngledSide(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  side: SideShade,
+): void {
+  const dc = side.attachC - side.c;
+  const dr = side.attachR - side.r;
+  const { c, r } = side;
+
+  // 45° walls are half-cell triangles: full extent along the attachment edge,
+  // half a cell outward perpendicular to the structure face.
+  if (dc !== 0) {
+    bounds.minY = Math.min(bounds.minY, r);
+    bounds.maxY = Math.max(bounds.maxY, r + 1);
+    if (dc === 1) {
+      bounds.minX = Math.min(bounds.minX, c + 0.5);
+    } else {
+      bounds.maxX = Math.max(bounds.maxX, c + 0.5);
+    }
+  } else {
+    bounds.minX = Math.min(bounds.minX, c);
+    bounds.maxX = Math.max(bounds.maxX, c + 1);
+    if (dr === 1) {
+      bounds.minY = Math.min(bounds.minY, r + 0.5);
+    } else {
+      bounds.maxY = Math.max(bounds.maxY, r + 0.5);
+    }
+  }
+}
+
 function computeFullDimensionsWithAngledSideWalls(
   config: ShapeConfig,
   state: ShapeState,
@@ -796,16 +825,18 @@ function computeFullDimensionsWithAngledSideWalls(
 
   const gx = Math.max(1, config.gridSizeX);
   const gy = Math.max(1, config.gridSizeY);
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
+  const bounds = {
+    minX: Infinity,
+    minY: Infinity,
+    maxX: -Infinity,
+    maxY: -Infinity,
+  };
 
   const includeCell = (c: number, r: number) => {
-    minX = Math.min(minX, c);
-    minY = Math.min(minY, r);
-    maxX = Math.max(maxX, c + 1);
-    maxY = Math.max(maxY, r + 1);
+    bounds.minX = Math.min(bounds.minX, c);
+    bounds.minY = Math.min(bounds.minY, r);
+    bounds.maxX = Math.max(bounds.maxX, c + 1);
+    bounds.maxY = Math.max(bounds.maxY, r + 1);
   };
 
   for (const key of state.cells) {
@@ -813,14 +844,14 @@ function computeFullDimensionsWithAngledSideWalls(
     includeCell(Number(parts[0]), Number(parts[1]));
   }
   for (const side of angled) {
-    includeCell(side.c, side.r);
+    extendBoundsForAngledSide(bounds, side);
   }
 
-  if (!Number.isFinite(minX)) return null;
+  if (!Number.isFinite(bounds.minX)) return null;
 
   return {
-    width: (maxX - minX) * gx,
-    height: (maxY - minY) * gy,
+    width: (bounds.maxX - bounds.minX) * gx,
+    height: (bounds.maxY - bounds.minY) * gy,
   };
 }
 
