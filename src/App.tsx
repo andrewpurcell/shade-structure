@@ -1346,6 +1346,85 @@ function PartsList({
   );
 }
 
+function CalculationsExplanation({ className = "" }: { className?: string }) {
+  return (
+    <details
+      className={`rounded-lg border border-stone-200 bg-white p-3 shadow ${className}`}
+    >
+      <summary className="cursor-pointer list-none text-xs font-semibold text-stone-700 [&::-webkit-details-marker]:hidden">
+        How parts are calculated
+      </summary>
+      <dl className="mt-3 space-y-3 text-[11px] leading-snug text-stone-600">
+        <div>
+          <dt className="font-medium text-stone-700">Poles</dt>
+          <dd className="mt-0.5">
+            One vertical pole per corner post, sized to structure height. Each
+            horizontal or vertical frame edge is measured in feet (grid spacing ×
+            grid units) and covered with 10 ft segments, plus one cut piece when
+            the length is not an exact multiple of 10 ft.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Connectors</dt>
+          <dd className="mt-0.5">
+            One connector at each post: a 5-way universal connector when that
+            option is enabled, otherwise a connector with one more slot than the
+            number of frame edges meeting at that post. Additional 2-way
+            connectors join pole segments along longer edge runs (one per joint
+            between segments).
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Foot plates</dt>
+          <dd className="mt-0.5">One per corner post.</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Ratchet straps & lag screws</dt>
+          <dd className="mt-0.5">
+            Corners (posts where exactly two frame edges meet) get two ratchet
+            straps, placed at an angle along each edge rather than straight down.
+            All other posts get one strap straight down. Lag screws match the
+            ratchet strap count.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Top tarps</dt>
+          <dd className="mt-0.5">
+            In optimal mode, adjacent cells are paired when possible (horizontal
+            pairs are twice the grid width; vertical pairs are twice the grid
+            height) to minimize tarp count. Unpaired cells use a single-cell
+            tarp. In &ldquo;Use what I have&rdquo; mode, pairs are split into
+            singles when your inventory includes at least two matching
+            single-cell tarps; remaining pairs stay doubled.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Side tarps</dt>
+          <dd className="mt-0.5">
+            One per side shade. Width matches the edge length; height is structure
+            height × 1.4 (flat or 45°).
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Bungee cords</dt>
+          <dd className="mt-0.5">
+            Grommets are spaced every 1.5 ft along each edge (rounded up). Flat
+            side shades: grommets along the top edge plus both vertical edges.
+            45° side shades: grommets along the sloped top edge only.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium text-stone-700">Multiple structures</dt>
+          <dd className="mt-0.5">
+            The combined parts list sums all structures. Inventory singles are
+            consumed in structure order when using &ldquo;Use what I have.&rdquo;
+          </dd>
+        </div>
+      </dl>
+    </details>
+  );
+}
+
 function CombinedPartsList({
   structures,
   className = "",
@@ -1779,10 +1858,12 @@ export default function App() {
             </button>
             <SettingsMenu settings={settings} onChange={setSettings} />
           </div>
-          <p className="text-stone-500 text-sm mb-8 text-center">
-            Click to add a cell or cycle shade → flat wall → 45° wall. Spots
-            bordering multiple cells skip wall states. Right‑click to remove.
+          <p className="text-stone-500 text-sm mb-4 text-center">
+            Click to add a cell or cycle shade → flat wall → 45° wall.
+            Right‑click to remove.
           </p>
+
+          <CalculationsExplanation className="mb-8 w-full max-w-4xl" />
 
           <div className="flex w-full flex-col items-center gap-12">
             {structures.map((entry, index) => (
