@@ -122,7 +122,7 @@ function sideTarpDimensions(
 ): { w: number; h: number } {
   return {
     w: sideShadeEdgeLength(side, gx, gy),
-    h: roundFeet(height * 1.4),
+    h: roundFeet(side.type === "angle" ? height * 1.4 : height),
   };
 }
 
@@ -1432,8 +1432,8 @@ function CalculationsExplanation({ className = "" }: { className?: string }) {
         <div>
           <dt className="font-medium text-stone-700">Side tarps</dt>
           <dd className="mt-0.5">
-            One per side shade. Width matches the edge length; height is structure
-            height × 1.4 (flat or 45°).
+            One per side shade. Flat walls use edge length × structure height; 45°
+            walls use edge length × structure height × 1.4.
           </dd>
         </div>
         <div>
